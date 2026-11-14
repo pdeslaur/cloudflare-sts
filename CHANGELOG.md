@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.1](https://github.com/pdeslaur/cloudflare-sts/compare/v0.24.0...v0.24.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* harden POST /email, the tenant pin and the release pipeline ([#11](https://github.com/pdeslaur/cloudflare-sts/issues/11)) ([2eb07ec](https://github.com/pdeslaur/cloudflare-sts/commit/2eb07ec248b6ec5f7daeb025442d6dd96afb6f5d))
+* revoke an Access service token only by a handle the broker signed ([#13](https://github.com/pdeslaur/cloudflare-sts/issues/13)) ([d21e51d](https://github.com/pdeslaur/cloudflare-sts/commit/d21e51d8cd69007c94e96882b1ef969083bbbc77))
+
 ## [0.24.0](https://github.com/pdeslaur/cloudflare-sts/compare/v0.23.0...v0.24.0) (2026-11-14)
 
 
