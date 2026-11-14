@@ -182,6 +182,12 @@ forward_claims = ["sub"]
 tunnel = { id = "c1744f8b-faa1-48a4-9e5c-02ac921467fa" }
 
 [[profiles]]
+name = "email.app"
+provider = "spire"
+forward_claims = ["sub"]
+email = { from = ["noreply@example.org"], to = ["alerts@example.org", "oncall@example.org"] }
+
+[[profiles]]
 name = "pinned-state"
 provider = "pinned"
 forward_claims = ["namespace_id"]

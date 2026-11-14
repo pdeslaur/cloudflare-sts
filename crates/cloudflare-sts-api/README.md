@@ -402,6 +402,22 @@ Write it as `{"AccountTag": …, "TunnelID": …, "TunnelSecret": …}` and run 
 - **Locally-managed tunnels.** Cloudflare sets a secret only on a tunnel whose configuration is local (`config_src = "local"`), whose routes are in cloudflared's own `config.yml`.
 - **Parent token:** the Cloudflare token needs **Cloudflare Tunnel Write**, which reaches every tunnel in the account: the profile, not the token, limits which one a caller gets. A policy whose profiles are all tunnels needs nothing else, and the hourly cleanup then lists nothing.
 
+### Email
+
+A profile's `email` lets its caller send email as the addresses it lists, through the Worker's `send_email` binding and [`POST /email`](#sending-email), so a service sends alerts without an API token or SMTP password of its own:
+
+```toml
+[[profiles]]
+name     = "homelab:email.gatus"
+provider = "spire"
+email    = { from = ["noreply@example.com"], to = ["alerts@example.com"] }
+```
+
+- **`from`:** the addresses it sends as. The envelope sender must be one, and the message's `From` must be that same address, so a caller can't put another sender in front of the reader.
+- **`to`:** the addresses it sends to. Left out, any the binding allows.
+- **Never exchanged for.** A profile with an `email` has nothing else, and `POST /oauth/token` refuses it (`invalid_scope`): it's only for `POST /email`.
+- **The binding:** `CLOUDFLARE_STS_API_EMAIL`, a [`send_email`](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/) binding, whose own allowed senders and recipients are a second guard. The Terraform module's `email` variable adds it. Without it, email profiles send nothing (`500`). No API token permission is involved.
+
 ### TTL and names
 
 - Durations look like `90s`, `15m`, `1h`, `1h30m`: each unit once, largest first.
@@ -547,6 +563,29 @@ curl -sS https://cloudflare-sts-api.example.com/oauth/revoke -d token="$CLOUDFLA
 
 For the caller's own mistakes (400) the description says what was wrong, for example `no profile matches the token`, `profiles a, b all match the token: name one`, `unknown profile x`, `profile example-org:workers-deploy isn't for provider com.gitlab`, `profile x is disabled` or `profile x doesn't match the token`. That tells a caller with a valid token which profile names exist. For the broker's faults (500, 503) the description is generic, and the logs say why.
 
+### Sending email
+
+`POST /email` sends a message as an [email profile](#email)'s caller. It isn't OAuth, and isn't in the contract below: it takes a raw message, and a bearer token (RFC 6750).
+
+- `Authorization: Bearer <token>`: an OIDC token from a provider, verified as an exchange's subject token is, which must be allowed the profile.
+- The query: `profile`, `from`, the envelope sender, and `to` once per recipient (1 to 50), as an SMTP relay has them, so `Bcc` recipients get it too.
+- The body: the message (RFC 5322), UTF-8, up to 25 MiB.
+
+```sh
+curl -sS "https://cloudflare-sts-api.example.com/email?profile=homelab:email.gatus&from=noreply%40example.com&to=alerts%40example.com" \
+  -H "Authorization: Bearer $SVID" -H "Content-Type: message/rfc822" --data-binary @message.eml
+```
+
+It's sent once per recipient, since the binding takes one, and answers `200` with `{"message_ids": [...]}`. Otherwise `{ "error": "<code>", "error_description": "<why>" }`:
+
+- `400 invalid_request`: a malformed query, a message over 25 MiB or not UTF-8, or one whose `From` isn't `from`
+- `401 invalid_token`: no token, or one that isn't valid
+- `403 insufficient_scope`: a token its provider doesn't admit, not allowed the profile, a profile without an `email`, or a sender or recipient the profile doesn't list
+- `500 server_error`: no `send_email` binding
+- `503 temporarily_unavailable`: the issuer's keys or the binding failed. Recipients before the one that failed were sent to, and a retry sends to them again.
+
+A relay can retry a `503` and give up on anything else.
+
 **Contract:** [`stsv1.tsp`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.tsp), in TypeSpec, compiled to the OpenAPI document [`stsv1.yaml`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.yaml). The Worker's types, server and router are generated from it, and requests that don't fit it are refused (`400`) before any handler runs. [cf-contrib/cloudflare-sts](https://github.com/cf-contrib/cloudflare-sts)'s action calls it.
 
 ## Security
@@ -593,6 +632,12 @@ A tunnel's new secret is `tunnel.rotate`, with the tunnel's ID, never the secret
 
 ```json
 {"level":"INFO","event":"tunnel.rotate","provider":"spire","profile":"homelab:tunnel.app","sub":"spiffe://example.org/svc/app","claims":"{\"sub\":\"spiffe://example.org/svc/app\"}","tunnel_id":"c1744f8b-faa1-48a4-9e5c-02ac921467fa"}
+```
+
+A message sent through `POST /email` is `email.send`, with its envelope and Cloudflare's message IDs, never its content; a refused one is `email.deny`:
+
+```json
+{"level":"INFO","event":"email.send","provider":"spire","profile":"homelab:email.gatus","sub":"spiffe://example.org/svc/gatus","claims":"{}","from":"noreply@example.com","to":"[\"alerts@example.com\"]","message_ids":"[\"<…@example.com>\"]"}
 ```
 
 Denials are `token.deny`, a warning, with the response's `error`, and its `error_description` as `message`. For the broker's own faults, the message is the full one the caller doesn't get:
@@ -642,6 +687,8 @@ The crate is laid out as cloudflare-nix's Worker is:
 | `src/oidc/` | OIDC tokens in the Worker, verified: the JWT format (RFC 7515, 7519), providers found by `iss` with their keys from the issuer's metadata (RFC 7517, 8414, OpenID Connect Discovery), and RS256 and ES256 through the runtime's WebCrypto. |
 | `src/service/layer.rs` | Exchange auth, as a tower layer over `oidc`: the subject token's provider by `iss`, RS256 or ES256 against the issuer's keys with WebCrypto, the standard claims, and whether the policy admits it. And `OAuthResponseLayer`, OAuth's rules for every response: the generated validation's refusals as `invalid_request`, and `Cache-Control: no-store`; `cache_publicly`, the discovery endpoints' `public, max-age=300`. |
 | `src/service/handler.rs` | The generated API's implementation, a handler per trait. `TokenServiceHandler`: the exchange (profiles, Cloudflare tokens and R2 credentials through [cloudflare-rs](https://github.com/cf-contrib/cloudflare-rs), the broker's own tokens), revocation, and the cleanup the cron runs. `DiscoveryServiceHandler`: the RFC 8414 and OpenID Connect Discovery metadata, and the keys. |
+| `src/service/access.rs`, `src/service/tunnel.rs` | The Cloudflare calls the generated client doesn't have, by hand over `fetch`: Access service tokens, and setting a tunnel's secret. |
+| `src/service/email.rs` | `POST /email`, outside the spec: the bearer token verified as an exchange's, the envelope against the email profile, and the message sent through the `send_email` binding. |
 
 ## Development
 

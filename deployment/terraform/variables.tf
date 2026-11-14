@@ -34,7 +34,21 @@ variable "cloudflare_token_secret" {
     secret_store_id = string
     secret_name     = string
   })
-  description = "Secrets Store secret holding the Cloudflare token: an account-owned token with \"Account API Tokens Write\", plus R2 permissions covering what profiles' buckets delegate (it creates those credentials and is their parent), plus \"Access: Service Tokens Write\" if any profile has an `access`, plus \"Cloudflare Tunnel Write\" if any profile has a `tunnel`. With only tunnel profiles, \"Cloudflare Tunnel Write\" is all it needs. Terraform only references it; the value never enters state."
+  description = "Secrets Store secret holding the Cloudflare token: an account-owned token with \"Account API Tokens Write\", plus R2 permissions covering what profiles' buckets delegate (it creates those credentials and is their parent), plus \"Access: Service Tokens Write\" if any profile has an `access`, plus \"Cloudflare Tunnel Write\" if any profile has a `tunnel`. An `email` needs no permission: the `email` binding sends it. With only tunnel and email profiles, \"Cloudflare Tunnel Write\" is all it needs. Terraform only references it; the value never enters state."
+}
+
+variable "email" {
+  type = object({
+    allowed_sender_addresses      = list(string)
+    allowed_destination_addresses = optional(list(string))
+  })
+  default     = null
+  description = "The `send_email` binding that profiles with an `email` send through, at POST /email: the addresses it may send as and, optionally, to. A second guard behind each profile's own `from` and `to`. Null, the default, binds nothing, and email profiles send nothing."
+
+  validation {
+    condition     = var.email == null || try(length(var.email.allowed_sender_addresses) > 0, false)
+    error_message = "email.allowed_sender_addresses must name at least one address."
+  }
 }
 
 variable "oidc_providers" {
@@ -57,7 +71,7 @@ variable "profiles" {
   # Untyped: a token policy's resources are flat or nested maps, as Cloudflare
   # takes them, and no one Terraform type holds both. The broker checks them.
   type        = any
-  description = "What callers may get: the policy's profiles. A list of objects, each with a name, optionally the forward_claims to copy into a token for a service, and a token, a bucket, an access (an Access service token), a service's audience, or a tunnel (whose secret each exchange sets), as the broker's README describes. Who gets each is the `cedar_policy`'s."
+  description = "What callers may get: the policy's profiles. A list of objects, each with a name, optionally the forward_claims to copy into a token for a service, and a token, a bucket, an access (an Access service token), a service's audience, a tunnel (whose secret each exchange sets), or an email (who POST /email sends as and to), as the broker's README describes. Who gets each is the `cedar_policy`'s."
 
   validation {
     condition     = try(length(var.profiles) > 0 && alltrue([for profile in var.profiles : length(profile.name) > 0]), false)

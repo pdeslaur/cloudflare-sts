@@ -15,6 +15,7 @@
 pub mod access;
 pub mod authz;
 pub mod config;
+pub mod email;
 pub mod handler;
 pub mod health;
 pub mod layer;

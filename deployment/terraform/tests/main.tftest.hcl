@@ -111,6 +111,41 @@ run "secrets_store_binding" {
   }
 }
 
+run "no_email_binding_by_default" {
+  command = plan
+
+  assert {
+    condition     = length([for b in cloudflare_worker_version.this.bindings : b if b.type == "send_email"]) == 0
+    error_message = "no send_email binding should be created without var.email"
+  }
+}
+
+run "email_binding" {
+  command = plan
+
+  variables {
+    email = { allowed_sender_addresses = ["noreply@example.com"], allowed_destination_addresses = ["alerts@example.com"] }
+  }
+
+  assert {
+    condition = anytrue([
+      for b in cloudflare_worker_version.this.bindings :
+      b.name == "CLOUDFLARE_STS_API_EMAIL" && b.type == "send_email" && b.allowed_sender_addresses == tolist(["noreply@example.com"]) && b.allowed_destination_addresses == tolist(["alerts@example.com"])
+    ])
+    error_message = "var.email should become the send_email binding"
+  }
+}
+
+run "rejects_an_email_binding_without_senders" {
+  command = plan
+
+  variables {
+    email = { allowed_sender_addresses = [] }
+  }
+
+  expect_failures = [var.email]
+}
+
 run "policy_is_built_from_the_variables" {
   command = plan
 

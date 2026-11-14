@@ -99,25 +99,36 @@ resource "cloudflare_worker_version" "this" {
     },
   ]
 
-  bindings = [
-    {
-      name = "CLOUDFLARE_STS_API_ACCOUNT_ID"
-      type = "plain_text"
-      text = var.account_id
-    },
-    {
-      name         = "CLOUDFLARE_STS_API_POLICY_KV"
-      type         = "kv_namespace"
-      namespace_id = cloudflare_workers_kv_namespace.policy.id
-    },
-    {
-      # Only ever from Secrets Store, so the token never enters Terraform state.
-      name        = "CLOUDFLARE_STS_API_CLOUDFLARE_TOKEN"
-      type        = "secrets_store_secret"
-      store_id    = var.cloudflare_token_secret.secret_store_id
-      secret_name = var.cloudflare_token_secret.secret_name
-    },
-  ]
+  bindings = concat(
+    [
+      {
+        name = "CLOUDFLARE_STS_API_ACCOUNT_ID"
+        type = "plain_text"
+        text = var.account_id
+      },
+      {
+        name         = "CLOUDFLARE_STS_API_POLICY_KV"
+        type         = "kv_namespace"
+        namespace_id = cloudflare_workers_kv_namespace.policy.id
+      },
+      {
+        # Only ever from Secrets Store, so the token never enters Terraform state.
+        name        = "CLOUDFLARE_STS_API_CLOUDFLARE_TOKEN"
+        type        = "secrets_store_secret"
+        store_id    = var.cloudflare_token_secret.secret_store_id
+        secret_name = var.cloudflare_token_secret.secret_name
+      },
+    ],
+    # What POST /email sends with, when profiles send email.
+    var.email == null ? [] : [
+      {
+        name                          = "CLOUDFLARE_STS_API_EMAIL"
+        type                          = "send_email"
+        allowed_sender_addresses      = var.email.allowed_sender_addresses
+        allowed_destination_addresses = var.email.allowed_destination_addresses
+      },
+    ],
+  )
 }
 
 # Promote the new version to 100% of traffic.

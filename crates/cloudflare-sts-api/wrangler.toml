@@ -39,3 +39,8 @@ id = "00000000000000000000000000000000"
 binding = "CLOUDFLARE_STS_API_CLOUDFLARE_TOKEN"
 store_id = "00000000000000000000000000000000"
 secret_name = "cloudflare-token"
+
+# What POST /email sends with. wrangler dev doesn't send: it writes each
+# message to a file and logs where.
+[[send_email]]
+name = "CLOUDFLARE_STS_API_EMAIL"
