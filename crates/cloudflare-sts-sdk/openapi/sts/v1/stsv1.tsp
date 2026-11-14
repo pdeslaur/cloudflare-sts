@@ -73,7 +73,8 @@ model TokenExchangeRequest {
 
   /**
    * Checked, not used to choose: what's issued is what the profile has. `access_token`,
-   * `r2_credentials` or `access_service_token`. Any other is `invalid_target`.
+   * `r2_credentials`, `access_service_token` or `tunnel_credentials`. Any other is
+   * `invalid_target`.
    */
   requested_token_type?: IssuedTokenType;
 
@@ -81,7 +82,8 @@ model TokenExchangeRequest {
    * The profiles to get, as a space-delimited list (RFC 6749 §3.3, RFC 8693 §2.1). The
    * caller must be allowed every one, or the request is `invalid_scope` and nothing is
    * issued. Profiles are combined into one grant: their token policies together, and at
-   * most one bucket and one access. If omitted, exactly one profile must match.
+   * most one bucket and one access. A tunnel profile can't be combined with any other. If
+   * omitted, exactly one profile must match.
    */
   @maxLength(1024)
   scope?: string;
@@ -96,12 +98,14 @@ model TokenExchangeRequest {
 
 /**
  * What the exchange issues: a Cloudflare API token (`access_token`), R2 credentials
- * alone (`r2_credentials`), or an Access service token alone (`access_service_token`).
+ * alone (`r2_credentials`), an Access service token alone (`access_service_token`), or a
+ * Cloudflare Tunnel's credentials (`tunnel_credentials`).
  */
 union IssuedTokenType {
   "urn:ietf:params:oauth:token-type:access_token",
   "urn:cloudflare-sts:params:oauth:token-type:r2_credentials",
   "urn:cloudflare-sts:params:oauth:token-type:access_service_token",
+  "urn:cloudflare-sts:params:oauth:token-type:tunnel_credentials",
 }
 
 model TokenExchangeResponse {
@@ -111,20 +115,23 @@ model TokenExchangeResponse {
   access_token?: string;
 
   /**
-   * `access_token` with an `access_token`; without one, `r2_credentials` with a bucket or
-   * else `access_service_token`.
+   * `access_token` with an `access_token`; without one, `r2_credentials` with a bucket,
+   * `tunnel_credentials` with a tunnel, or else `access_service_token`.
    */
   issued_token_type: IssuedTokenType;
 
   /** `Bearer` with an `access_token`, or `N_A` without one (RFC 8693 §2.2.1). */
   token_type: "Bearer" | "N_A";
 
-  /** Seconds until the token, or the R2 credentials, expire. */
+  /**
+   * Seconds until the token, or the R2 credentials, expire. Absent for a tunnel's
+   * credentials, which last until the next exchange for it replaces them.
+   */
   @minValue(0)
-  expires_in: integer;
+  expires_in?: integer;
 
-  /** When the token, or the R2 credentials, expire: Unix time in seconds. */
-  expires_at: integer;
+  /** When the token, or the R2 credentials, expire: Unix time in seconds. Absent with `expires_in`. */
+  expires_at?: integer;
 
   /** The Cloudflare API token's ID, present with `access_token`. */
   token_id?: string;
@@ -140,6 +147,9 @@ model TokenExchangeResponse {
 
   /** The Access service token, for a profile with `access`. */
   access?: AccessCredentials;
+
+  /** The tunnel's credentials, for a profile with a `tunnel`. */
+  tunnel?: TunnelCredentials;
 }
 
 /**
@@ -159,6 +169,23 @@ model AccessCredentials {
   audience: string;
 
   expires_on: utcDateTime;
+}
+
+/**
+ * A locally-managed Cloudflare Tunnel's credentials, as `cloudflared` reads them from its
+ * credentials file (`AccountTag`, `TunnelID`, `TunnelSecret`). Each exchange sets a new
+ * secret on the tunnel, so the previous one stops registering connections; nothing else
+ * expires or can be revoked.
+ */
+model TunnelCredentials {
+  /** The tunnel's account: cloudflared's `AccountTag`. */
+  account_tag: string;
+
+  /** cloudflared's `TunnelID`. */
+  tunnel_id: string;
+
+  /** cloudflared's `TunnelSecret`: 32 random bytes, base64. */
+  tunnel_secret: string;
 }
 
 /** S3 credentials for the profile's R2 bucket, limited to `prefixes`. They can't be revoked; they expire. */

@@ -112,6 +112,10 @@ when { context.namespace_id == "4000001" };
 permit (principal, action == Profile::Action::"spire-deploy", resource)
 when { context.sub == "spiffe://example.org/svc/app" };
 
+@id("allow-tunnel.app")
+permit (principal, action == Profile::Action::"tunnel.app", resource)
+when { context.sub == "spiffe://example.org/svc/app" };
+
 @id("allow-example-org/app:tofu-plan")
 permit (principal, action == Profile::Action::"example-org/app:tofu-plan", resource)
 when { context.email == "alice@example.com" };

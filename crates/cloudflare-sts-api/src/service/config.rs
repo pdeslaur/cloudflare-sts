@@ -337,6 +337,14 @@ impl PolicyConfig {
         Ok(policy)
     }
 
+    /// Whether any profile mints something the cleanup deletes once it
+    /// lapses: a Cloudflare API token or an Access service token.
+    pub fn mints_tokens(&self) -> bool {
+        self.profiles
+            .iter()
+            .any(|p| p.token.is_some() || p.access.is_some())
+    }
+
     /// Whether `provider` lets the token with `claims` in at all: its tenant,
     /// pinned. Checked as the token is verified.
     pub fn admit(&self, provider: &str, claims: &Map<String, Value>) -> Verdict {
@@ -607,6 +615,9 @@ pub struct ProfileConfig {
     /// The Access application its caller gets a service token for. One per
     /// profile, so the action always exports it under the same names.
     pub access: Option<AccessConfig>,
+    /// The tunnel whose secret its caller sets, and gets the credentials for.
+    /// A profile with one has nothing else.
+    pub tunnel: Option<TunnelConfig>,
 }
 
 impl ProfileConfig {
@@ -698,6 +709,12 @@ impl ProfileConfig {
             return Ok((*first).clone());
         }
         let names = profiles.iter().map(|p| p.name.as_str());
+        if let Some(tunnel) = profiles.iter().find(|p| p.tunnel.is_some()) {
+            return Err(format!(
+                "scope {} is a tunnel's, which can't be combined with other scopes: ask for it alone",
+                tunnel.name
+            ));
+        }
         let with_bucket: Vec<&str> = profiles
             .iter()
             .filter(|p| p.bucket.is_some())
@@ -745,6 +762,7 @@ impl ProfileConfig {
             token: (!policies.is_empty()).then_some(TokenConfig { policies }),
             bucket: profiles.iter().find_map(|p| p.bucket.clone()),
             access: profiles.iter().find_map(|p| p.access.clone()),
+            tunnel: None,
         })
     }
 
@@ -753,9 +771,18 @@ impl ProfileConfig {
         check_forward_claims(&self.forward_claims)
             .map_err(|why| format!("{at}.forward_claims {why}"))?;
 
-        if self.token.is_none() && self.bucket.is_none() && self.access.is_none() {
+        let grants = self.token.is_some() || self.bucket.is_some() || self.access.is_some();
+        if let Some(tunnel) = &self.tunnel {
+            if grants {
+                return Err(format!(
+                    "{at} has a tunnel, so it can't also have a token, a bucket or an access"
+                ));
+            }
+            return tunnel.check(&format!("{at}.tunnel"));
+        }
+        if !grants {
             return Err(format!(
-                "{at} must have a token, a bucket, an access, or a mix"
+                "{at} must have a token, a bucket, an access, or a mix, or a tunnel"
             ));
         }
 
@@ -1029,6 +1056,40 @@ impl AccessConfig {
             ));
         }
         Ok(())
+    }
+}
+
+/// A locally-managed Cloudflare Tunnel whose secret a profile's caller sets.
+/// Each exchange sets a new one, so the credentials it returns are the only
+/// ones that register the tunnel's connections.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TunnelConfig {
+    /// The tunnel's UUID.
+    pub id: String,
+}
+
+impl TunnelConfig {
+    fn check(&self, at: &str) -> Result<(), String> {
+        check_uuid(&self.id).map_err(|why| format!("{at}.id {why}"))
+    }
+}
+
+/// Whether `id` is a UUID in its canonical form: 36 characters, lowercase hex
+/// in groups of 8, 4, 4, 4 and 12. It's put in an API path, so nothing else is
+/// taken.
+fn check_uuid(id: &str) -> Result<(), &'static str> {
+    let groups: Vec<&str> = id.split('-').collect();
+    let canonical = groups.iter().map(|group| group.len()).eq([8, 4, 4, 4, 12])
+        && groups.iter().all(|group| {
+            group
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        });
+    if canonical {
+        Ok(())
+    } else {
+        Err("must be a tunnel's UUID, lowercase")
     }
 }
 
@@ -1951,6 +2012,72 @@ pub(super) mod tests {
                 "{audience}: {err}"
             );
         }
+    }
+
+    const TUNNEL_ID: &str = "c1744f8b-faa1-48a4-9e5c-02ac921467fa";
+
+    fn tunnel_profile() -> Value {
+        json!({ "name": "tunnel.app", "tunnel": { "id": TUNNEL_ID } })
+    }
+
+    #[test]
+    fn a_tunnel_profile_is_granted_alone() {
+        let policy = with_profile(tunnel_profile());
+        let parsed = parse(&policy);
+        let (profile, _) = parsed
+            .profiles_for("github", &claims(), &["tunnel.app"])
+            .unwrap();
+        assert_eq!(profile.tunnel.map(|t| t.id).as_deref(), Some(TUNNEL_ID));
+
+        // Combined with anything else, it's refused, not merged
+        assert_eq!(
+            scoped(&policy, claims(), &["deploy", "tunnel.app"]),
+            err(
+                "scope tunnel.app is a tunnel's, which can't be combined with other scopes: ask for it alone"
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_a_tunnel_profile_with_anything_else() {
+        let mut profile = tunnel_profile();
+        profile["token"] = token();
+        let err = parse_err(&with_profile(profile));
+        assert!(
+            err.contains("profiles[2] has a tunnel, so it can't also have a token"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_tunnel_id_that_isnt_a_uuid() {
+        for id in [
+            "",
+            "C1744F8B-FAA1-48A4-9E5C-02AC921467FA",
+            "c1744f8bfaa148a49e5c02ac921467fa",
+            "c1744f8b-faa1-48a4-9e5c-02ac921467fa/connections",
+            "../c1744f8b-faa1-48a4-9e5c-02ac921467f",
+        ] {
+            let err = parse_err(&with_profile(
+                json!({ "name": "tunnel.app", "tunnel": { "id": id } }),
+            ));
+            assert!(
+                err.contains("profiles[2].tunnel.id must be a tunnel's UUID"),
+                "{id}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn mints_tokens_unless_every_profile_is_a_tunnels_or_a_buckets() {
+        assert!(parse(&policy()).mints_tokens());
+
+        let mut only_tunnels = with_profile(tunnel_profile());
+        only_tunnels["profiles"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|p| p["token"].is_null());
+        assert!(!parse(&only_tunnels).mints_tokens());
     }
 
     #[test]

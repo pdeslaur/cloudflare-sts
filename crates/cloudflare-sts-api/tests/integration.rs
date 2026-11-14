@@ -965,7 +965,11 @@ mod spiffe {
     #[tokio::test]
     async fn exchanges_an_es256_jwt_svid_signed_by_a_jwt_svid_key() {
         let t = start().await;
-        let res = job_token(&svid(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, APP), &[]).await;
+        let res = job_token(
+            &svid(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, APP),
+            &[("scope", "spire-deploy")],
+        )
+        .await;
         assert_eq!(res.status, 200, "{}", res.text);
         assert_eq!(res.json()["scope"], "spire-deploy");
         assert_matches(
@@ -1008,6 +1012,121 @@ mod spiffe {
             &t.deny().await,
             "invalid_request",
             "no profile matches the token",
+        );
+    }
+}
+
+mod tunnels {
+    use super::*;
+
+    const APP: &str = "spiffe://example.org/svc/app";
+
+    async fn exchange(sub: &str, scope: &str) -> Reply {
+        let svid = sign_svid(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, json!({ "sub": sub }));
+        job_token(&svid, &[("scope", scope)]).await
+    }
+
+    fn tunnel_patches() -> usize {
+        world()
+            .cloudflare
+            .requests
+            .iter()
+            .filter(|r| r.method == "PATCH" && r.path.contains("/cfd_tunnel/"))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn sets_a_new_secret_on_its_tunnel_on_every_exchange() {
+        let t = start().await;
+        let mut secrets = Vec::new();
+        for _ in 0..2 {
+            let res = exchange(APP, "tunnel.app").await;
+            assert_eq!(res.status, 200, "{}", res.text);
+            assert_eq!(res.cache_control.as_deref(), Some("no-store"));
+            let body = res.json();
+            assert_matches(
+                &body,
+                json!({
+                    "issued_token_type": TUNNEL_CREDENTIALS,
+                    "token_type": "N_A",
+                    "scope": "tunnel.app",
+                    "account_id": ACCOUNT_ID,
+                }),
+            );
+            assert_eq!(body["tunnel"]["account_tag"], ACCOUNT_ID);
+            assert_eq!(body["tunnel"]["tunnel_id"], APP_TUNNEL);
+            // Nothing expires, so nothing says when.
+            for absent in ["access_token", "expires_in", "expires_at", "token_id"] {
+                assert!(body.get(absent).is_none(), "{absent}: {body}");
+            }
+            let secret = body["tunnel"]["tunnel_secret"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &secret)
+                    .unwrap()
+                    .len(),
+                32
+            );
+            // What the response says is what the tunnel now has.
+            assert_eq!(
+                world().cloudflare.tunnels[APP_TUNNEL].as_deref(),
+                Some(secret.as_str())
+            );
+            secrets.push(secret);
+        }
+        assert_ne!(secrets[0], secrets[1], "each exchange sets a new secret");
+        assert_eq!(
+            world().cloudflare.tunnels[OTHER_TUNNEL],
+            None,
+            "no other tunnel is touched"
+        );
+        assert_eq!(world().cloudflare.tokens.len(), 1, "nothing is minted");
+
+        let audit = t.audit("tunnel.rotate").await.unwrap();
+        assert_matches(
+            &audit,
+            json!({ "provider": "spire", "profile": "tunnel.app", "sub": APP, "tunnel_id": APP_TUNNEL }),
+        );
+        assert!(
+            !audit.to_string().contains(&secrets[0]) && !audit.to_string().contains(&secrets[1])
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_another_services_svid_without_touching_the_tunnel() {
+        let t = start().await;
+        let res = exchange("spiffe://example.org/svc/other", "tunnel.app").await;
+        assert_eq!(res.status, 400, "{}", res.text);
+        assert_refused(&t.deny().await, "invalid_scope", "tunnel.app");
+        assert_eq!(tunnel_patches(), 0);
+    }
+
+    #[tokio::test]
+    async fn refuses_a_tunnel_with_other_scopes() {
+        let t = start().await;
+        let res = exchange(APP, "tunnel.app spire-deploy").await;
+        assert_eq!(res.status, 400, "{}", res.text);
+        assert_refused(
+            &t.deny().await,
+            "invalid_scope",
+            "can't be combined with other scopes",
+        );
+        assert_eq!(tunnel_patches(), 0);
+        assert_eq!(world().cloudflare.tokens.len(), 1, "nothing is minted");
+    }
+
+    #[tokio::test]
+    async fn fails_when_cloudflare_cant_set_the_secret() {
+        let t = start().await;
+        world().cloudflare.fail_tunnel = true;
+        let res = exchange(APP, "tunnel.app").await;
+        assert_eq!(res.status, 503, "{}", res.text);
+        assert_refused(
+            &t.deny().await,
+            "temporarily_unavailable",
+            "Cloudflare: cfdTunnel.update: returned 500",
         );
     }
 }

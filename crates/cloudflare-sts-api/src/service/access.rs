@@ -45,7 +45,7 @@ struct CreatedResult {
     expires_at: Option<DateTime<Utc>>,
 }
 
-fn failure(status: u16, body: &Value) -> Failure {
+pub(super) fn failure(status: u16, body: &Value) -> Failure {
     let said = body
         .pointer("/errors/0/message")
         .and_then(Value::as_str)

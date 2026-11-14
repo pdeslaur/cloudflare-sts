@@ -39,13 +39,13 @@ use cloudflare_sts_sdk::v1::{
     Error, ErrorCode, IssuedTokenType, TokenExchangeRequest,
     TokenExchangeRequestSubjectTokenType as SubjectTokenType, TokenExchangeResponse,
     TokenExchangeResponseTokenType as TokenType, TokenRevocationRequest,
-    TokenRevocationRequestTokenTypeHint, TokenServiceApi,
+    TokenRevocationRequestTokenTypeHint, TokenServiceApi, TunnelCredentials,
 };
 use tracing::{error, info, warn};
 use worker::{Date, send::SendFuture};
 
 use super::config::{
-    AccessConfig, BucketPermission, Config, ProfileConfig, ProviderConfig, Refusal,
+    AccessConfig, BucketPermission, Config, ProfileConfig, ProviderConfig, Refusal, TunnelConfig,
 };
 use crate::oidc::{self, Jwt};
 
@@ -81,7 +81,12 @@ impl TokenServiceHandler {
     }
 
     /// Deletes expired `cloudflare-sts:` tokens, for the hourly cron. Returns how many.
+    /// Lists nothing when no profile mints a token, so the Cloudflare token
+    /// needn't be allowed to list them.
     pub async fn cleanup(&self) -> Result<usize, Error> {
+        if !self.config.policy().mints_tokens() {
+            return Ok(0);
+        }
         let cloudflare = self.cloudflare().await?;
         let account_id = self.config.cloudflare().account_id();
         let now = Date::now().as_millis() / 1000;
@@ -412,12 +417,61 @@ impl TokenServiceHandler {
             access_token,
             account_id: Some(account_id.into()),
             bucket: issued,
-            expires_at,
-            expires_in: (expires_at - now as i64).max(0),
+            expires_at: Some(expires_at),
+            expires_in: Some((expires_at - now as i64).max(0)),
             issued_token_type,
             scope: profile.name.clone(),
             token_id,
             token_type,
+            tunnel: None,
+        })
+    }
+
+    /// A tunnel's credentials, with a new secret set on it. Nothing is
+    /// minted that could expire or be revoked.
+    async fn tunnel_credentials(
+        &self,
+        identity: &Jwt,
+        provider: &ProviderConfig,
+        profile: &ProfileConfig,
+        tunnel: &TunnelConfig,
+    ) -> Result<TokenExchangeResponse, Error> {
+        let cloudflare = self.config.cloudflare();
+        let account_id = cloudflare.account_id();
+        let secret = cloudflare
+            .rotate_tunnel_secret(tunnel)
+            .await
+            .map_err(|why| {
+                Error::new(
+                    ErrorCode::TemporarilyUnavailable,
+                    format!("Cloudflare: cfdTunnel.update: {why}"),
+                )
+            })?;
+        info!(
+            event = "tunnel.rotate",
+            provider = %provider.name,
+            profile = %profile.name,
+            sub = identity.claims.sub(),
+            claims = %serde_json::Value::Object(profile.forwarded_claims(&identity.claims)),
+            tunnel_id = %tunnel.id,
+        );
+        Ok(TokenExchangeResponse {
+            access: None,
+            access_token: None,
+            account_id: Some(account_id.into()),
+            bucket: None,
+            expires_at: None,
+            expires_in: None,
+            issued_token_type:
+                IssuedTokenType::UrnCloudflareStsParamsOauthTokenTypeTunnelCredentials,
+            scope: profile.name.clone(),
+            token_id: None,
+            token_type: TokenType::NA,
+            tunnel: Some(TunnelCredentials {
+                account_tag: account_id.into(),
+                tunnel_id: tunnel.id.clone(),
+                tunnel_secret: secret,
+            }),
         })
     }
 }
@@ -486,6 +540,13 @@ impl TokenServiceApi for TokenServiceHandler {
                     sub = identity.claims.sub(),
                     policies = ?allowed_by,
                 );
+                // A tunnel's credentials don't expire, so there's no TTL to
+                // take.
+                if let Some(tunnel) = &profile.tunnel {
+                    return self
+                        .tunnel_credentials(identity, provider, profile, tunnel)
+                        .await;
+                }
                 let ttl = profile
                     .ttl_for(request.ttl.as_deref())
                     .map_err(|why| invalid_request(&why))?;
