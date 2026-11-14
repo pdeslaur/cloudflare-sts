@@ -37,8 +37,8 @@
             pkgs.pkg-config
             pkgs.worker-build
             rust-toolchain
-            # Both.
-            pkgs.wrangler
+            # The Terraform module. wrangler comes from
+            # crates/cloudflare-sts-api/package.json: nixpkgs builds it from source.
             pkgs.opentofu
           ];
         };

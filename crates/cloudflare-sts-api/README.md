@@ -613,7 +613,8 @@ The crate is laid out as cloudflare-nix's Worker is:
 
 ## Development
 
-`nix develop` at the repository root has the toolchain.
+`nix develop` at the repository root has the toolchain. wrangler is pinned in
+this crate's `package.json`, which `tests/run.sh` installs when it's missing.
 
 `cargo test` runs the unit tests. The integration tests run the Worker under
 `wrangler dev` against stand-ins for the OIDC issuers and Cloudflare that the
