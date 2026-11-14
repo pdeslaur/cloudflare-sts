@@ -1131,6 +1131,177 @@ mod tunnels {
     }
 }
 
+mod email {
+    use super::*;
+
+    const APP: &str = "spiffe://example.org/svc/app";
+    const ENVELOPE: &str = "profile=email.app&from=noreply%40example.org&to=alerts%40example.org";
+
+    fn svid(sub: &str) -> String {
+        sign_svid(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, json!({ "sub": sub }))
+    }
+
+    /// A fresh hold on the world, for a second case in the same test.
+    async fn start_again(t: Test) -> Test {
+        drop(t);
+        start().await
+    }
+
+    fn message(from: &str) -> String {
+        format!(
+            "From: Gatus <{from}>\r\nTo: alerts@example.org\r\nSubject: [ALERT] api is down\r\nMessage-ID: <{}@example.org>\r\nDate: Sat, 14 Nov 2026 12:00:00 +0000\r\n\r\napi has failed 3 checks in a row.\r\n",
+            now()
+        )
+    }
+
+    #[tokio::test]
+    async fn sends_as_the_profile_to_each_recipient() {
+        let t = start().await;
+        let res = send_email(
+            Some(&svid(APP)),
+            &format!("{ENVELOPE}&to=oncall%40example.org"),
+            &message("noreply@example.org"),
+        )
+        .await;
+        assert_eq!(res.status, 200, "{}", res.text);
+        assert_eq!(res.json()["message_ids"].as_array().map(Vec::len), Some(2));
+        assert_matches(
+            &t.audit("email.send").await.unwrap(),
+            json!({ "provider": "spire", "profile": "email.app", "sub": APP, "from": "noreply@example.org" }),
+        );
+        let sent = t.sent_emails(2).await;
+        assert_eq!(sent.len(), 2, "one per recipient");
+        for message in sent {
+            assert!(
+                message.contains("Subject: [ALERT] api is down"),
+                "{message}"
+            );
+        }
+    }
+
+    /// Refused with `status` and `error`, and nothing sent.
+    async fn assert_not_sent(t: &Test, res: Reply, status: u16, error: &str, message: &str) {
+        assert_eq!(res.status, status, "{}", res.text);
+        assert_eq!(res.json()["error"], error, "{}", res.text);
+        assert!(
+            res.json()["error_description"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{}",
+            res.text
+        );
+        let deny = t.audit("email.deny").await.unwrap();
+        assert_refused(&deny, error, message);
+        assert!(t.sent_emails(0).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refuses_without_a_valid_token() {
+        let t = start().await;
+        let raw = message("noreply@example.org");
+        let res = send_email(None, ENVELOPE, &raw).await;
+        assert_not_sent(&t, res, 401, "invalid_token", "a bearer token is required").await;
+
+        let t = start_again(t).await;
+        let forged = sign_svid(&SPIFFE_X509_KEY, SPIFFE_X509_KID, json!({ "sub": APP }));
+        let res = send_email(Some(&forged), ENVELOPE, &raw).await;
+        assert_not_sent(&t, res, 401, "invalid_token", "unknown signing key").await;
+    }
+
+    #[tokio::test]
+    async fn refuses_another_services_token() {
+        let t = start().await;
+        let res = send_email(
+            Some(&svid("spiffe://example.org/svc/other")),
+            ENVELOPE,
+            &message("noreply@example.org"),
+        )
+        .await;
+        assert_not_sent(&t, res, 403, "insufficient_scope", "email.app").await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_profile_that_isnt_for_email() {
+        let t = start().await;
+        let res = send_email(
+            Some(&svid(APP)),
+            "profile=tunnel.app&from=noreply%40example.org&to=alerts%40example.org",
+            &message("noreply@example.org"),
+        )
+        .await;
+        assert_not_sent(
+            &t,
+            res,
+            403,
+            "insufficient_scope",
+            "profile tunnel.app isn't for email",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_sender_or_recipient_the_profile_doesnt_list() {
+        let t = start().await;
+        let res = send_email(
+            Some(&svid(APP)),
+            "profile=email.app&from=admin%40example.org&to=alerts%40example.org",
+            &message("admin@example.org"),
+        )
+        .await;
+        assert_not_sent(
+            &t,
+            res,
+            403,
+            "insufficient_scope",
+            "doesn't send as admin@example.org",
+        )
+        .await;
+
+        let t = start_again(t).await;
+        let res = send_email(
+            Some(&svid(APP)),
+            &format!("{ENVELOPE}&to=boss%40example.org"),
+            &message("noreply@example.org"),
+        )
+        .await;
+        assert_not_sent(
+            &t,
+            res,
+            403,
+            "insufficient_scope",
+            "doesn't send to boss@example.org",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_message_from_someone_else() {
+        let t = start().await;
+        let res = send_email(Some(&svid(APP)), ENVELOPE, &message("ceo@example.org")).await;
+        assert_not_sent(
+            &t,
+            res,
+            400,
+            "invalid_request",
+            "the message's From is ceo@example.org",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn is_never_exchanged_for() {
+        let t = start().await;
+        let res = job_token(&svid(APP), &[("scope", "email.app")]).await;
+        assert_eq!(res.status, 400, "{}", res.text);
+        assert_refused(
+            &t.deny().await,
+            "invalid_scope",
+            "scope email.app is for sending email",
+        );
+    }
+}
+
 #[tokio::test]
 async fn serves_only_the_apis_routes() {
     let _t = start().await;

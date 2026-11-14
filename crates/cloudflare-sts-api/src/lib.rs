@@ -32,6 +32,7 @@ use worker::*;
 
 use crate::service::{
     config::Config,
+    email::{self, EMAIL_PATH},
     handler::{DiscoveryServiceHandler, TokenServiceHandler},
     health::ConfigCheck,
     layer::{AuthenticateLayer, OAuthResponseLayer, cache_publicly},
@@ -66,6 +67,13 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> Result<HttpResponse
                 .merge(
                     v1::discovery_service_api_router(DiscoveryServiceHandler::new(config.clone()))
                         .layer(axum::middleware::map_response(cache_publicly)),
+                )
+                // Not in the spec: it takes a raw message, and authenticates
+                // its own bearer token.
+                .merge(
+                    axum::Router::new()
+                        .route(EMAIL_PATH, axum::routing::post(email::send))
+                        .with_state(config.clone()),
                 )
                 // Not in the spec: they're for whoever deploys the Worker, not
                 // its clients. Ready only while the config checks out.

@@ -35,7 +35,7 @@ use cloudflare::v4::{
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use tracing::warn;
-use worker::{Env, Error, SecretStore, js_sys, wasm_bindgen::JsValue};
+use worker::{Env, Error, SecretStore, SendEmail, js_sys, wasm_bindgen::JsValue};
 
 use super::authz::{Authz, Verdict};
 use crate::oidc::{Provider, Providers, check_url};
@@ -63,6 +63,10 @@ const POLICY_TTL: f64 = 60_000.0;
 /// Write", plus R2 permissions covering what profiles' buckets delegate.
 const CLOUDFLARE_TOKEN_KEY: &str = "CLOUDFLARE_STS_API_CLOUDFLARE_TOKEN";
 
+/// The `send_email` binding `POST /email` sends with. Optional: without it,
+/// email profiles send nothing.
+const EMAIL_KEY: &str = "CLOUDFLARE_STS_API_EMAIL";
+
 /// Where Cloudflare's API is.
 const CLOUDFLARE_URL: &str = "https://api.cloudflare.com/client/v4";
 
@@ -88,6 +92,8 @@ pub struct Config {
     policy: Arc<PolicyConfig>,
     /// The account tokens are minted in, and its API.
     cloudflare: CloudflareConfig,
+    /// The `send_email` binding, if it's bound.
+    email: Option<SendEmail>,
 }
 
 impl Config {
@@ -101,7 +107,12 @@ impl Config {
     pub async fn load(env: &Env) -> worker::Result<Self> {
         let cloudflare = CloudflareConfig::from_env(env)?;
         let policy = load_policy(env, cloudflare.account_id()).await?;
-        Ok(Self { policy, cloudflare })
+        let email = env.send_email(EMAIL_KEY).ok();
+        Ok(Self {
+            policy,
+            cloudflare,
+            email,
+        })
     }
 
     /// The policy.
@@ -112,6 +123,11 @@ impl Config {
     /// The account tokens are minted in, and its API.
     pub fn cloudflare(&self) -> &CloudflareConfig {
         &self.cloudflare
+    }
+
+    /// The `send_email` binding, if it's bound.
+    pub fn email(&self) -> Option<&SendEmail> {
+        self.email.as_ref()
     }
 }
 
@@ -618,6 +634,9 @@ pub struct ProfileConfig {
     /// The tunnel whose secret its caller sets, and gets the credentials for.
     /// A profile with one has nothing else.
     pub tunnel: Option<TunnelConfig>,
+    /// Who its caller may send email as, and to, through `POST /email`. A
+    /// profile with one has nothing else, and is never exchanged for.
+    pub email: Option<EmailConfig>,
 }
 
 impl ProfileConfig {
@@ -709,6 +728,12 @@ impl ProfileConfig {
             return Ok((*first).clone());
         }
         let names = profiles.iter().map(|p| p.name.as_str());
+        if let Some(email) = profiles.iter().find(|p| p.email.is_some()) {
+            return Err(format!(
+                "scope {} is for sending email, which POST /email does",
+                email.name
+            ));
+        }
         if let Some(tunnel) = profiles.iter().find(|p| p.tunnel.is_some()) {
             return Err(format!(
                 "scope {} is a tunnel's, which can't be combined with other scopes: ask for it alone",
@@ -763,6 +788,7 @@ impl ProfileConfig {
             bucket: profiles.iter().find_map(|p| p.bucket.clone()),
             access: profiles.iter().find_map(|p| p.access.clone()),
             tunnel: None,
+            email: None,
         })
     }
 
@@ -772,18 +798,28 @@ impl ProfileConfig {
             .map_err(|why| format!("{at}.forward_claims {why}"))?;
 
         let grants = self.token.is_some() || self.bucket.is_some() || self.access.is_some();
-        if let Some(tunnel) = &self.tunnel {
-            if grants {
+        match (&self.tunnel, &self.email) {
+            (Some(_), Some(_)) => {
+                return Err(format!("{at} can't have both a tunnel and an email"));
+            }
+            (Some(_), None) | (None, Some(_)) if grants => {
+                let kind = if self.tunnel.is_some() {
+                    "a tunnel"
+                } else {
+                    "an email"
+                };
                 return Err(format!(
-                    "{at} has a tunnel, so it can't also have a token, a bucket or an access"
+                    "{at} has {kind}, so it can't also have a token, a bucket or an access"
                 ));
             }
-            return tunnel.check(&format!("{at}.tunnel"));
-        }
-        if !grants {
-            return Err(format!(
-                "{at} must have a token, a bucket, an access, or a mix, or a tunnel"
-            ));
+            (Some(tunnel), None) => return tunnel.check(&format!("{at}.tunnel")),
+            (None, Some(email)) => return email.check(&format!("{at}.email")),
+            (None, None) if !grants => {
+                return Err(format!(
+                    "{at} must have a token, a bucket, an access, or a mix, or a tunnel, or an email"
+                ));
+            }
+            (None, None) => {}
         }
 
         if let Some(token) = &self.token {
@@ -1072,6 +1108,71 @@ pub struct TunnelConfig {
 impl TunnelConfig {
     fn check(&self, at: &str) -> Result<(), String> {
         check_uuid(&self.id).map_err(|why| format!("{at}.id {why}"))
+    }
+}
+
+/// Who a profile's caller may send email as, and to, through `POST /email`,
+/// which sends it with the Worker's `send_email` binding. Addresses compare
+/// without case.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmailConfig {
+    /// The addresses it may send as: the envelope sender, which the
+    /// message's `From` must be too.
+    pub from: Vec<String>,
+    /// The addresses it may send to. Unset, any the binding allows.
+    #[serde(default)]
+    pub to: Option<Vec<String>>,
+}
+
+impl EmailConfig {
+    /// Whether it may send as `address`.
+    pub fn sends_as(&self, address: &str) -> bool {
+        self.from
+            .iter()
+            .any(|from| from.eq_ignore_ascii_case(address))
+    }
+
+    /// Whether it may send to `address`.
+    pub fn sends_to(&self, address: &str) -> bool {
+        self.to
+            .as_ref()
+            .is_none_or(|to| to.iter().any(|to| to.eq_ignore_ascii_case(address)))
+    }
+
+    fn check(&self, at: &str) -> Result<(), String> {
+        if self.from.is_empty() {
+            return Err(format!("{at}.from must name at least one address"));
+        }
+        if self.to.as_ref().is_some_and(Vec::is_empty) {
+            return Err(format!(
+                "{at}.to must name at least one address, or be left out"
+            ));
+        }
+        let addresses = self.from.iter().map(|a| ("from", a));
+        let addresses = addresses.chain(self.to.iter().flatten().map(|a| ("to", a)));
+        for (field, address) in addresses {
+            check_address(address).map_err(|why| format!("{at}.{field}: {address} {why}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether `address` is a bare email address, `local@domain`: ASCII, with no
+/// spaces, display name or angle brackets.
+pub(crate) fn check_address(address: &str) -> Result<(), &'static str> {
+    let bare = address.len() <= 254
+        && address.is_ascii()
+        && !address.contains(|c: char| {
+            c.is_ascii_whitespace() || c.is_ascii_control() || "<>(),;:\"[]\\".contains(c)
+        })
+        && address.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && !domain.is_empty() && !domain.contains('@') && domain.contains('.')
+        });
+    if bare {
+        Ok(())
+    } else {
+        Err("isn't a bare address such as noreply@example.com")
     }
 }
 
@@ -2065,6 +2166,86 @@ pub(super) mod tests {
                 err.contains("profiles[2].tunnel.id must be a tunnel's UUID"),
                 "{id}: {err}"
             );
+        }
+    }
+
+    fn email_profile() -> Value {
+        json!({ "name": "email.app", "email": { "from": ["noreply@example.com"], "to": ["alerts@example.com"] } })
+    }
+
+    #[test]
+    fn an_email_profile_is_never_combined() {
+        let policy = with_profile(email_profile());
+        let parsed = parse(&policy);
+        let email = parsed
+            .profiles
+            .iter()
+            .find_map(|p| p.email.as_ref())
+            .expect("the profile has its email");
+        assert!(email.sends_as("NoReply@Example.com") && !email.sends_as("admin@example.com"));
+        assert!(email.sends_to("alerts@example.com") && !email.sends_to("boss@example.com"));
+
+        assert_eq!(
+            scoped(&policy, claims(), &["deploy", "email.app"]),
+            err("scope email.app is for sending email, which POST /email does")
+        );
+    }
+
+    #[test]
+    fn rejects_a_bad_email_profile() {
+        let mut with_token = email_profile();
+        with_token["token"] = token();
+        let mut with_tunnel = email_profile();
+        with_tunnel["tunnel"] = json!({ "id": TUNNEL_ID });
+        for (profile, why) in [
+            (
+                with_token,
+                "profiles[2] has an email, so it can't also have a token",
+            ),
+            (
+                with_tunnel,
+                "profiles[2] can't have both a tunnel and an email",
+            ),
+            (
+                json!({ "name": "email.app", "email": { "from": [] } }),
+                "profiles[2].email.from must name at least one address",
+            ),
+            (
+                json!({ "name": "email.app", "email": { "from": ["noreply@example.com"], "to": [] } }),
+                "profiles[2].email.to must name at least one address, or be left out",
+            ),
+            (
+                json!({ "name": "email.app", "email": { "from": ["Gatus <noreply@example.com>"] } }),
+                "profiles[2].email.from: Gatus <noreply@example.com> isn't a bare address",
+            ),
+            (
+                json!({ "name": "email.app", "email": { "from": ["noreply@example.com"], "to": ["alerts"] } }),
+                "profiles[2].email.to: alerts isn't a bare address",
+            ),
+        ] {
+            let err = parse_err(&with_profile(profile));
+            assert!(err.contains(why), "{why}: {err}");
+        }
+    }
+
+    #[test]
+    fn checks_bare_addresses() {
+        for ok in ["noreply@example.com", "a.b+c@sub.example.org"] {
+            assert_eq!(check_address(ok), Ok(()), "{ok}");
+        }
+        for bad in [
+            "",
+            "noreply",
+            "@example.com",
+            "noreply@",
+            "noreply@localhost",
+            "a@b@example.com",
+            "no reply@example.com",
+            "<noreply@example.com>",
+            "noreply@example.com\r\nBcc: x@example.com",
+            "nöreply@example.com",
+        ] {
+            assert!(check_address(bad).is_err(), "{bad:?}");
         }
     }
 

@@ -156,6 +156,29 @@ impl Test {
         String::from_utf8_lossy(&bytes[(self.log_from as usize).min(bytes.len())..]).into_owned()
     }
 
+    /// The messages `wrangler dev` took from the `send_email` binding since the
+    /// test began, as it wrote them out, once there are `count` of them or
+    /// wrangler has had a moment: it logs them after the Worker's own lines.
+    pub async fn sent_emails(&self, count: usize) -> Vec<String> {
+        let paths = || -> Vec<String> {
+            self.log()
+                .lines()
+                .filter_map(|line| line.strip_prefix("Email: "))
+                .map(|path| path.trim().to_string())
+                .collect()
+        };
+        for _ in 0..20 {
+            if paths().len() >= count {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        paths()
+            .iter()
+            .map(|path| std::fs::read_to_string(path).expect("the message was written"))
+            .collect()
+    }
+
     /// The audit lines since the test began.
     pub fn audit_lines(&self) -> Vec<Value> {
         self.log()
@@ -822,4 +845,17 @@ fn ec_jwk(key: &EcSigningKey, kid: &str, use_: &str) -> Value {
         "x": URL_SAFE_NO_PAD.encode(point.x().unwrap()),
         "y": URL_SAFE_NO_PAD.encode(point.y().unwrap()),
     })
+}
+
+/// `POST /email` with `query` and the raw message, and `token` as the bearer
+/// token if there is one.
+pub async fn send_email(token: Option<&str>, query: &str, raw: &str) -> Reply {
+    let mut request = reqwest::Client::new()
+        .post(format!("{BROKER}/email?{query}"))
+        .header("content-type", "message/rfc822")
+        .body(raw.to_string());
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    reply(request.send().await.expect("the Worker answers")).await
 }

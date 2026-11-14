@@ -540,6 +540,12 @@ impl TokenServiceApi for TokenServiceHandler {
                     sub = identity.claims.sub(),
                     policies = ?allowed_by,
                 );
+                if profile.email.is_some() {
+                    return Err(Error::new(
+                        ErrorCode::InvalidScope,
+                        format!("scope {} is for sending email, which POST /email does", profile.name),
+                    ));
+                }
                 // A tunnel's credentials don't expire, so there's no TTL to
                 // take.
                 if let Some(tunnel) = &profile.tunnel {
