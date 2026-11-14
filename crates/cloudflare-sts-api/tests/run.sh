@@ -7,6 +7,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# wrangler, as package.json pins it.
+[ -x node_modules/.bin/wrangler ] || npm ci --no-audit --no-fund
+PATH="$PWD/node_modules/.bin:$PATH"
+
 STORE=00000000000000000000000000000000
 PERSIST=.wrangler/integration
 LOG=${CLOUDFLARE_STS_API_LOG:-$PWD/.wrangler/integration.log}
