@@ -1461,12 +1461,15 @@ mod access_service_tokens {
 
         let access = &body["access"];
         assert_eq!(access["audience"], format!("https://{HOST}"));
+        let handle = access["token_id"].as_str().unwrap();
         let world = world();
         let stored = world
             .cloudflare
             .service_tokens
-            .get(access["token_id"].as_str().unwrap())
+            .get(service_token_id(handle))
             .expect("the service token exists");
+        // What revoking it takes: its ID, signed
+        assert_eq!(handle, service_token_handle(&stored.id));
         assert_eq!(access["client_id"], stored.client_id.as_str());
         assert_eq!(access["client_secret"], stored.client_secret.as_str());
         assert!(
@@ -1544,29 +1547,57 @@ mod access_service_tokens {
             json!({
                 "profile": "combo-access",
                 "audience": format!("https://{HOST}"),
-                "token_id": body["access"]["token_id"],
+                // The ID alone: the log never has what revokes the token
+                "token_id": service_token_id(body["access"]["token_id"].as_str().unwrap()),
             }),
         );
         let text = line.to_string();
         let secret = body["access"]["client_secret"].as_str().unwrap();
         assert!(!text.contains(secret), "the secret is in the log: {text}");
+        let handle = body["access"]["token_id"].as_str().unwrap();
+        assert!(!text.contains(handle), "the handle is in the log: {text}");
     }
 
     #[tokio::test]
-    async fn revokes_a_service_token_by_its_id() {
+    async fn revokes_a_service_token_by_its_handle() {
         let _t = start().await;
         let issued = job_token(&combo(), &[("scope", "combo-access")])
             .await
             .json();
-        let id = issued["access"]["token_id"].as_str().unwrap();
-        let res = revoke_access(id).await;
+        let handle = issued["access"]["token_id"].as_str().unwrap();
+        let res = revoke_access(handle).await;
         assert_eq!(res.status, 200, "{}", res.text);
         assert_eq!(service_tokens(), 0);
         // Again, or one that never was: still 200, RFC 7009's
-        assert_eq!(revoke_access(id).await.status, 200);
+        assert_eq!(revoke_access(handle).await.status, 200);
         assert_eq!(revoke_access("nope").await.status, 200);
-        // An ID that isn't one is never put in a path
+        // An ID that isn't one is never put in a path, signed or not
         assert_eq!(revoke_access("../tokens").await.status, 200);
+        let signed = service_token_handle("../tokens");
+        assert_eq!(revoke_access(&signed).await.status, 200);
+    }
+
+    #[tokio::test]
+    async fn doesnt_revoke_a_service_token_by_its_id_alone() {
+        let _t = start().await;
+        let issued = job_token(&combo(), &[("scope", "combo-access")])
+            .await
+            .json();
+        let handle = issued["access"]["token_id"].as_str().unwrap();
+        let id = service_token_id(handle);
+        let calls = world().cloudflare.calls().len();
+
+        // The ID, as a log or the dashboard shows it, and a signature that
+        // isn't the broker's: still 200, and nothing is deleted
+        let forged = format!("{id}.{}", "A".repeat(43));
+        for token in [id, forged.as_str()] {
+            let res = revoke_access(token).await;
+            assert_eq!(res.status, 200, "{}", res.text);
+        }
+        assert_eq!(service_tokens(), 1);
+        // Refused before Cloudflare is asked: it costs the Cloudflare token
+        // no API call
+        assert_eq!(world().cloudflare.calls().len(), calls);
     }
 
     #[tokio::test]
@@ -1575,7 +1606,8 @@ mod access_service_tokens {
         let foreign = world()
             .cloudflare
             .add_service_token("someone else's", "2099-01-01T00:00:00Z".into());
-        let res = revoke_access(&foreign.id).await;
+        // Even by a handle the broker would sign: it's not named as its own
+        let res = revoke_access(&service_token_handle(&foreign.id)).await;
         assert_eq!(res.status, 200, "{}", res.text);
         assert!(world().cloudflare.service_tokens.contains_key(&foreign.id));
     }

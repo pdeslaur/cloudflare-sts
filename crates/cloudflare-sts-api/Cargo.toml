@@ -44,6 +44,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std"] }
 tracing-web = "0.1"
 
+# Signs the handle an Access service token is revoked by, with sha2.
+hmac = { version = "0.13", default-features = false }
+
 [dev-dependencies]
 # The integration tests ask the health endpoints with the SDK's client.
 cloudflare-sts-sdk = { path = "../cloudflare-sts-sdk", features = ["client"] }

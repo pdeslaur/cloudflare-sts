@@ -43,7 +43,8 @@ enum Versions {
 model TokenRevocationRequest {
   /**
    * The Cloudflare API token, as the exchange returned it in `access_token`; or, with
-   * the `access_service_token` hint, the service token's ID (`access.token_id`).
+   * the `access_service_token` hint, the service token's handle (`access.token_id`),
+   * exactly as the exchange returned it: its ID alone revokes nothing.
    */
   @minLength(1)
   @maxLength(8192)
@@ -159,7 +160,10 @@ model TokenExchangeResponse {
  * new one.
  */
 model AccessCredentials {
-  /** The service token's ID, which revoking it takes. */
+  /**
+   * The service token's handle, which revoking it takes: its ID, then a `.` and the
+   * broker's signature of it. Opaque: send it back as it is.
+   */
   token_id: string;
 
   client_id: string;
