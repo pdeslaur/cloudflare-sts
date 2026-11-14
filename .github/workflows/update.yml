@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The pull request is opened with an octo-sts token rather than
       # GITHUB_TOKEN, so that it triggers CI. The
       # .github/chainguard/update.sts.yaml trust policy grants it.
@@ -22,9 +22,9 @@ jobs:
           scope: ${{ github.repository }}
           identity: update
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v23
+        uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
       - name: Update root flake.lock
-        uses: nixos-contrib/nix-update@v1
+        uses: nixos-contrib/nix-update@66a6de7828436a397a377a83a1f85f463b0432b9 # v1
         with:
           token: ${{ steps.octo-sts.outputs.token }}
           pr-title: "chore(flake): update flake.lock"

@@ -23,9 +23,10 @@ updates:
     groups:
       all-npm:
         patterns: ["*"]
+    # Not auto-merged: npm and cargo updates bring in code nobody here has
+    # read, so a person merges them.
     labels:
       - "dependencies"
-      - "auto-merge"
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -39,7 +40,6 @@ updates:
         patterns: ["*"]
     labels:
       - "dependencies"
-      - "auto-merge"
     commit-message:
       prefix: "chore"
       include: "scope"
@@ -72,7 +72,6 @@ updates:
         patterns: ["*"]
     labels:
       - "dependencies"
-      - "auto-merge"
     commit-message:
       prefix: "chore"
       include: "scope"
