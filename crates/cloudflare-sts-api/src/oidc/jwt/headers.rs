@@ -3,13 +3,39 @@
 
 use serde::Deserialize;
 
-/// What tokens are verified with, and what OIDC verifiers support by default.
-pub const ALGORITHM: &str = "RS256";
+/// The algorithms (RFC 7518 §3.1) tokens are verified with: RS256, which OIDC
+/// verifiers support by default, and ES256, which SPIFFE issuers sign with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Algorithm {
+    /// RSASSA-PKCS1-v1_5 with SHA-256.
+    Rs256,
+    /// ECDSA on P-256 with SHA-256.
+    Es256,
+}
+
+impl Algorithm {
+    /// The one an `alg` names, if it's one of them.
+    pub fn from_name(alg: &str) -> Option<Self> {
+        match alg {
+            "RS256" => Some(Self::Rs256),
+            "ES256" => Some(Self::Es256),
+            _ => None,
+        }
+    }
+
+    /// Its `alg`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rs256 => "RS256",
+            Self::Es256 => "ES256",
+        }
+    }
+}
 
 /// The JOSE Header parameters (RFC 7515 §4.1) a JWT is verified by.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Header {
-    /// `alg`: `RS256`, the only algorithm accepted.
+    /// `alg`: an [`Algorithm`]'s name.
     pub alg: String,
     /// `kid`: which of its issuer's keys signed it.
     #[serde(default)]
@@ -44,7 +70,7 @@ mod tests {
     #[test]
     fn typ_compares_as_a_media_type() {
         let header = |typ: &str| Header {
-            alg: ALGORITHM.into(),
+            alg: "RS256".into(),
             kid: None,
             typ: Some(typ.into()),
         };

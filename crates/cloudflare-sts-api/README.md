@@ -242,7 +242,7 @@ A provider is an OIDC issuer you trust to vouch for a caller. `providers` is a l
 
 **Pin the tenant.** GitHub Actions, gitlab.com and HCP Terraform issue tokens to anyone's projects, and the broker URL is public. Every provider needs a `permit` for its `Admit` action that pins yours, by ID: `repository_owner_id` for GitHub Actions, `namespace_id` or `project_id` for gitlab.com, `terraform_organization_id` for HCP Terraform. The broker refuses a provider with none, but it can't tell which claims pin a tenant: that's yours to get right.
 
-A profile's `provider` can be left out when the policy has exactly one provider. Tokens are RS256.
+A profile's `provider` can be left out when the policy has exactly one provider. Tokens are RS256 or ES256. A key in a SPIFFE bundle marked `use: "jwt-svid"` verifies JWT-SVIDs; one marked `x509-svid` never verifies a token.
 
 ### The Cedar policy
 
@@ -527,7 +527,7 @@ For the caller's own mistakes (400) the description says what was wrong, for exa
 
 | Threat | Mitigation |
 |---|---|
-| Forged or tampered JWT | Signature checked against the issuer's JWKS (RS256 only), plus `iss`, `aud`, `exp` and `nbf` with 60s tolerance |
+| Forged or tampered JWT | Signature checked against the issuer's JWKS (RS256 or ES256, each key only for its own algorithm), plus `iss`, `aud`, `exp` and `nbf` with 60s tolerance |
 | A repo outside your org asks for a token | Every provider needs an `Admit` permit; pin your tenant's ID there |
 | A token from an issuer you don't trust | Only issuers listed as providers are accepted, by exact `iss`, with keys from that issuer's own metadata or `jwks_uri` |
 | Deleted repo or org re-registered by an attacker | Pin numeric IDs, not names |
@@ -587,7 +587,7 @@ The other events:
 ## Limitations
 
 - **One account per broker.** Tokens are minted in `CLOUDFLARE_STS_API_ACCOUNT_ID` only. Deploy one broker per account.
-- **RS256 only, one provider per issuer.** Issuers that sign with another algorithm (such as ES256) aren't supported yet. To serve several GitHub orgs, admit them all in the provider's `permit`: `["100000001", "100000002"].contains(context.repository_owner_id)`.
+- **RS256 and ES256 only, one provider per issuer.** Issuers that sign with another algorithm (such as EdDSA or ES384) aren't supported. To serve several GitHub orgs, admit them all in the provider's `permit`: `["100000001", "100000002"].contains(context.repository_owner_id)`.
 - **OIDC tokens only.** People need an identity provider that issues them one, such as [Cloudflare Access](#people). Rules on a person's role in a GitHub repo can't be expressed: their tokens don't carry it.
 - **The tenant pin is yours to get right.** The broker requires every provider to have an `Admit` permit, but knows no issuer's tenant claim by name.
 - **No JWT replay cache.** A stolen JWT can be exchanged again until it expires. The custom audience and its short lifetime limit this.
@@ -607,8 +607,8 @@ The crate is laid out as cloudflare-nix's Worker is:
 | `src/lib.rs` | The start, fetch and scheduled events: the JSON logger, the configuration, then the SDK's two routers over it, the token endpoints under the auth layer and the discovery endpoints under `cache_publicly`, and the health endpoints, all under `OAuthResponseLayer`. |
 | `src/service/config.rs` | The bindings and the policy from KV, read in `Config::load` only, and the configuration's format: providers, profiles, bucket prefixes, and the guardrails parsing checks. |
 | `src/service/authz.rs` | The Cedar half of the policy: parsing it, checking it against the configuration, and asking it who may be admitted and who gets which profile. |
-| `src/oidc/` | OIDC tokens in the Worker, verified: the JWT format (RFC 7515, 7519), providers found by `iss` with their keys from the issuer's metadata (RFC 7517, 8414, OpenID Connect Discovery), and RS256 through the runtime's WebCrypto. |
-| `src/service/layer.rs` | Exchange auth, as a tower layer over `oidc`: the subject token's provider by `iss`, RS256 against the issuer's keys with WebCrypto, the standard claims, and whether the policy admits it. And `OAuthResponseLayer`, OAuth's rules for every response: the generated validation's refusals as `invalid_request`, and `Cache-Control: no-store`; `cache_publicly`, the discovery endpoints' `public, max-age=300`. |
+| `src/oidc/` | OIDC tokens in the Worker, verified: the JWT format (RFC 7515, 7519), providers found by `iss` with their keys from the issuer's metadata (RFC 7517, 8414, OpenID Connect Discovery), and RS256 and ES256 through the runtime's WebCrypto. |
+| `src/service/layer.rs` | Exchange auth, as a tower layer over `oidc`: the subject token's provider by `iss`, RS256 or ES256 against the issuer's keys with WebCrypto, the standard claims, and whether the policy admits it. And `OAuthResponseLayer`, OAuth's rules for every response: the generated validation's refusals as `invalid_request`, and `Cache-Control: no-store`; `cache_publicly`, the discovery endpoints' `public, max-age=300`. |
 | `src/service/handler.rs` | The generated API's implementation, a handler per trait. `TokenServiceHandler`: the exchange (profiles, Cloudflare tokens and R2 credentials through [cloudflare-rs](https://github.com/cf-contrib/cloudflare-rs), the broker's own tokens), revocation, and the cleanup the cron runs. `DiscoveryServiceHandler`: the RFC 8414 and OpenID Connect Discovery metadata, and the keys. |
 
 ## Development

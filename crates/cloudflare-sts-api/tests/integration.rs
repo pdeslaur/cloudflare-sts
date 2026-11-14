@@ -953,6 +953,65 @@ mod providers {
     }
 }
 
+mod spiffe {
+    use super::*;
+
+    const APP: &str = "spiffe://example.org/svc/app";
+
+    fn svid(key: &p256::ecdsa::SigningKey, kid: &str, sub: &str) -> String {
+        sign_svid(key, kid, json!({ "sub": sub }))
+    }
+
+    #[tokio::test]
+    async fn exchanges_an_es256_jwt_svid_signed_by_a_jwt_svid_key() {
+        let t = start().await;
+        let res = job_token(&svid(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, APP), &[]).await;
+        assert_eq!(res.status, 200, "{}", res.text);
+        assert_eq!(res.json()["scope"], "spire-deploy");
+        assert_matches(
+            &t.audit("token.mint").await.unwrap(),
+            json!({ "provider": "spire", "profile": "spire-deploy", "sub": APP }),
+        );
+    }
+
+    #[tokio::test]
+    async fn never_verifies_with_an_x509_svid_authority() {
+        let t = start().await;
+        let res = job_token(&svid(&SPIFFE_X509_KEY, SPIFFE_X509_KID, APP), &[]).await;
+        assert_eq!(res.status, 400, "{}", res.text);
+        assert_refused(
+            &t.deny().await,
+            "invalid_request",
+            "invalid token: unknown signing key",
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_an_svid_signed_by_another_key_than_its_kid_names() {
+        let t = start().await;
+        let res = job_token(&svid(&SPIFFE_X509_KEY, SPIFFE_JWT_KID, APP), &[]).await;
+        assert_eq!(res.status, 400, "{}", res.text);
+        assert_refused(
+            &t.deny().await,
+            "invalid_request",
+            "invalid token: bad signature",
+        );
+    }
+
+    #[tokio::test]
+    async fn holds_an_svid_to_the_policy() {
+        let t = start().await;
+        let other = "spiffe://example.org/svc/other";
+        let res = job_token(&svid(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, other), &[]).await;
+        assert_eq!(res.status, 400, "{}", res.text);
+        assert_refused(
+            &t.deny().await,
+            "invalid_request",
+            "no profile matches the token",
+        );
+    }
+}
+
 #[tokio::test]
 async fn serves_only_the_apis_routes() {
     let _t = start().await;

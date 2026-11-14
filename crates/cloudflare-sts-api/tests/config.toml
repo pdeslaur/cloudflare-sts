@@ -33,6 +33,11 @@ audience = "http://127.0.0.1:8790"
 typ = "at+jwt"
 
 [[providers]]
+name = "spire"
+issuer = "http://127.0.0.1:8791/issuers/spire"
+audience = "http://127.0.0.1:8790"
+
+[[providers]]
 name = "access"
 issuer = "http://127.0.0.1:8791/issuers/access"
 audience = "test-access-client-id"
@@ -161,6 +166,14 @@ name = "gitlab-state"
 provider = "gitlab"
 forward_claims = ["namespace_id", "project_path"]
 bucket = { "name" = "org-terraform-state", "permission" = "object-read-write", "prefixes" = ["gitlab.com/{project_path}/", "{namespace_id}/{project_id}/"] }
+
+[[profiles]]
+name = "spire-deploy"
+provider = "spire"
+forward_claims = ["sub"]
+[[profiles.token.policies]]
+permissions = ["Workers Scripts Write"]
+resources = { "com.cloudflare.api.account.0123456789abcdef0123456789abcdef" = "*" }
 
 [[profiles]]
 name = "pinned-state"

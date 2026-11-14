@@ -22,10 +22,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use worker::Date;
 
-use self::keys::RsaKey;
+use self::keys::Key;
 pub use self::keys::check_url;
 use crate::oidc::{
-    Claims, Error, Header, Jwt,
+    Algorithm, Claims, Error, Header, Jwt,
     error::invalid,
     jwt::{LEEWAY_SECS, Unverified},
 };
@@ -93,12 +93,13 @@ impl<P: Provider> Providers<P> {
 
         let Unverified {
             jwt,
+            alg,
             signing_input,
             signature,
         } = Unverified::decode(token)?;
         let provider = self.for_claims(&jwt.claims)?;
         provider.check_header(&jwt.header)?;
-        let key = provider.key(jwt.header.kid.as_deref(), now_ms).await?;
+        let key = provider.key(jwt.header.kid.as_deref(), alg, now_ms).await?;
         if !key.verify(signing_input.as_bytes(), &signature).await? {
             return Err(invalid("bad signature"));
         }
@@ -198,10 +199,10 @@ trait ProviderExt: Provider {
         claims.validate(self.issuer(), self.audience(), now_ms / 1000)
     }
 
-    /// The provider's key that `kid` names, or its only one when there's no
-    /// `kid`.
-    async fn key(&self, kid: Option<&str>, now_ms: u64) -> Result<RsaKey, Error> {
-        keys::find(self.issuer(), self.jwks_uri(), kid, now_ms).await
+    /// The provider's key for `alg` that `kid` names, or its only one for
+    /// `alg` when there's no `kid`.
+    async fn key(&self, kid: Option<&str>, alg: Algorithm, now_ms: u64) -> Result<Key, Error> {
+        keys::find(self.issuer(), self.jwks_uri(), kid, alg, now_ms).await
     }
 }
 
@@ -270,7 +271,6 @@ mod tests {
     use serde_json::{Map, Value, json};
 
     use super::*;
-    use crate::oidc::ALGORITHM;
 
     const ISSUER: &str = "https://token.actions.githubusercontent.com";
     const AUDIENCE: &str = "https://cloudflare-sts-api.example.com";
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn checks_the_typ_a_provider_names() {
         let header = Header {
-            alg: ALGORITHM.into(),
+            alg: "RS256".into(),
             kid: None,
             typ: Some("JWT".into()),
         };
