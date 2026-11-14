@@ -88,7 +88,7 @@ If a stored secret is acceptable to you, it's less to run.
 
 ## Development
 
-Everything runs inside the dev shell: `nix develop`, or the Dev Container.
+Everything runs inside the dev shell: `nix develop`.
 
 ```sh
 (cd action && npm ci && npm run lint && npm run typecheck && npm test)   # the action
