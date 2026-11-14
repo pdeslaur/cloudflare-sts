@@ -37,7 +37,10 @@ use serde_json::{Map, Value};
 use tracing::warn;
 use worker::{Env, Error, SecretStore, SendEmail, js_sys, wasm_bindgen::JsValue};
 
-use super::authz::{Authz, Verdict};
+use super::{
+    access,
+    authz::{Authz, Verdict},
+};
 use crate::oidc::{Provider, Providers, check_url};
 
 /// The binding of the account the Cloudflare token belongs to, and tokens are
@@ -258,6 +261,21 @@ impl CloudflareConfig {
         let status = response.status_code();
         let text = response.text().await.unwrap_or_default();
         Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+    }
+
+    /// The handle an exchange gives out for the Access service token `id`,
+    /// which revoking it takes: signed with the Cloudflare token, read now, so
+    /// rotating that token retires every handle with it.
+    pub async fn service_token_handle(&self, id: &str) -> worker::Result<String> {
+        let key = self.token.read().await?;
+        Ok(access::handle(key.as_bytes(), id))
+    }
+
+    /// The ID of the Access service token `handle` is for, if the broker
+    /// signed it.
+    pub async fn service_token_id(&self, handle: &str) -> worker::Result<Option<String>> {
+        let key = self.token.read().await?;
+        Ok(access::handle_id(key.as_bytes(), handle).map(String::from))
     }
 
     /// The API, as `token`: one a caller presents, say.

@@ -365,7 +365,19 @@ impl TokenServiceHandler {
                             token_id = %created.id,
                             expires_at = created.expires_at.timestamp(),
                         );
-                        Some((config, created))
+                        // What revoking it takes: its ID, signed. A grant
+                        // that can't be revoked isn't handed out; the service
+                        // token lapses, and the cleanup deletes it.
+                        let cloudflare_config = self.config.cloudflare();
+                        match cloudflare_config.service_token_handle(&created.id).await {
+                            Ok(handle) => Some((config, created, handle)),
+                            Err(err) => {
+                                if let Some((token_id, _, _)) = &token {
+                                    discard_token(&cloudflare, account_id, token_id).await;
+                                }
+                                return Err(Error::new(ErrorCode::ServerError, err.to_string()));
+                            }
+                        }
                     }
                     Err(why) => {
                         if let Some((token_id, _, _)) = &token {
@@ -385,7 +397,7 @@ impl TokenServiceHandler {
         let expires_at = match (&token, &issued, &access) {
             (Some((_, _, at)), ..) => *at,
             (None, Some(_), _) | (None, None, None) => expires_on,
-            (None, None, Some((_, created))) => created.expires_at,
+            (None, None, Some((_, created, _))) => created.expires_at,
         }
         .timestamp();
         let has_bucket = issued.is_some();
@@ -408,12 +420,12 @@ impl TokenServiceHandler {
             ),
         };
         Ok(TokenExchangeResponse {
-            access: access.map(|(config, created)| AccessCredentials {
+            access: access.map(|(config, created, handle)| AccessCredentials {
                 audience: config.audience.clone(),
                 client_id: created.client_id,
                 client_secret: created.client_secret,
                 expires_on: created.expires_at,
-                token_id: created.id,
+                token_id: handle,
             }),
             access_token,
             account_id: Some(account_id.into()),
@@ -627,22 +639,31 @@ impl TokenServiceApi for TokenServiceHandler {
             // and it's deleted if the broker minted it. Cloudflare doesn't
             // recognize one invalid, expired, deleted or another account's.
             let revoked = async {
-                // An Access service token is revoked by its ID: Cloudflare
-                // won't say a secret is right, so the ID, which only the job
-                // that was issued it has, is the proof. It's deleted if the
-                // broker minted it, by its name.
+                // An Access service token is revoked by its handle: Cloudflare
+                // won't say a secret is right, so the ID as the exchange
+                // signed it, which only the job that was issued it has, is
+                // the proof. Anything else is refused before Cloudflare is
+                // asked, so it costs the Cloudflare token no API call. The
+                // token is deleted if the broker minted it, by its name.
                 if request.token_type_hint
                     == Some(
                         TokenRevocationRequestTokenTypeHint::UrnCloudflareStsParamsOauthTokenTypeAccessServiceToken,
                     )
                 {
-                    let id = request.token.as_str();
+                    let access = self.config.cloudflare();
+                    let Some(id) = access
+                        .service_token_id(&request.token)
+                        .await
+                        .map_err(|err| Error::new(ErrorCode::ServerError, err.to_string()))?
+                    else {
+                        return Ok(RevokeStatus::Gone);
+                    };
+                    let id = id.as_str();
                     // An ID is a UUID: anything else isn't a token, and isn't
                     // put in a path.
                     if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
                         return Ok(RevokeStatus::Gone);
                     }
-                    let access = self.config.cloudflare();
                     let name = match access.get_service_token(id).await {
                         Ok(Some(token)) => token.name,
                         Ok(None) => return Ok(RevokeStatus::Gone),

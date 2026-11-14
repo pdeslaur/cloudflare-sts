@@ -5,12 +5,49 @@
 //! application's tokens from another's, and the client's Access product is
 //! hundreds of operations the Worker would carry for four.
 
+//!
+//! Cloudflare won't say a service token's secret is right, so revoking one
+//! takes a [`handle`]: its ID with the broker's MAC of it. Only an exchange
+//! gives one out, so an ID read from a log or a dashboard revokes nothing,
+//! and a made-up one is refused before Cloudflare is asked about it.
+
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::Sha256;
 use worker::Method;
 
 use super::config::CloudflareConfig;
+
+/// What a handle's MAC covers before the ID, so the key signs nothing that
+/// could pass for anything else.
+const HANDLE_CONTEXT: &str = "cloudflare-sts:access-service-token:";
+
+/// The MAC of the service token `id` under `key`, not yet finalized.
+fn handle_mac(key: &[u8], id: &str) -> Hmac<Sha256> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(HANDLE_CONTEXT.as_bytes());
+    mac.update(id.as_bytes());
+    mac
+}
+
+/// The handle for the service token `id`: `<id>.<mac>`, the MAC
+/// (HMAC-SHA-256, base64url) under `key`.
+pub(super) fn handle(key: &[u8], id: &str) -> String {
+    let mac = handle_mac(key, id).finalize().into_bytes();
+    format!("{id}.{}", URL_SAFE_NO_PAD.encode(mac))
+}
+
+/// The ID in `handle`, if its MAC is `key`'s of that ID. Compared in constant
+/// time.
+pub(super) fn handle_id<'a>(key: &[u8], handle: &'a str) -> Option<&'a str> {
+    let (id, mac) = handle.rsplit_once('.')?;
+    let mac = URL_SAFE_NO_PAD.decode(mac).ok()?;
+    handle_mac(key, id).verify_slice(&mac).ok()?;
+    Some(id)
+}
 
 /// The shortest lifetime Cloudflare gives a service token: it refuses less
 /// than 10 minutes.
@@ -154,5 +191,46 @@ impl CloudflareConfig {
             200..=299 if body["success"] == true => Ok(true),
             _ => Err(failure(status, &body)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &[u8] = b"test-cloudflare-token";
+    const ID: &str = "f174e90a-fafe-4643-bbbc-4a0ed4fc8415";
+
+    #[test]
+    fn a_handle_gives_back_its_id() {
+        let handle = handle(KEY, ID);
+        assert!(handle.starts_with(&format!("{ID}.")), "{handle}");
+        assert_eq!(handle_id(KEY, &handle), Some(ID));
+    }
+
+    #[test]
+    fn refuses_anything_the_key_didnt_sign() {
+        let signed = handle(KEY, ID);
+        let (_, mac) = signed.rsplit_once('.').unwrap();
+        let other = "0b0c4f2e-7d2c-4c0e-9a51-6f3be0d1c2a4";
+        for forged in [
+            // The ID alone, as a log or a dashboard shows it.
+            ID.to_string(),
+            format!("{ID}."),
+            format!("{ID}.{}", URL_SAFE_NO_PAD.encode([0u8; 32])),
+            format!("{ID}.not base64"),
+            // Another token's ID under this one's MAC.
+            format!("{other}.{mac}"),
+            // A MAC cut short.
+            signed[..signed.len() - 4].to_string(),
+            String::new(),
+        ] {
+            assert_eq!(handle_id(KEY, &forged), None, "{forged}");
+        }
+        assert_eq!(
+            handle_id(b"another-cloudflare-token", &signed),
+            None,
+            "a rotated Cloudflare token signs anew"
+        );
     }
 }

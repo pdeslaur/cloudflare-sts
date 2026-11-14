@@ -145,7 +145,9 @@ components:
       properties:
         token_id:
           type: string
-          description: The service token's ID, which revoking it takes.
+          description: |-
+            The service token's handle, which revoking it takes: its ID, then a `.` and the
+            broker's signature of it. Opaque: send it back as it is.
         client_id:
           type: string
         client_secret:
@@ -368,7 +370,8 @@ components:
           maxLength: 8192
           description: |-
             The Cloudflare API token, as the exchange returned it in `access_token`; or, with
-            the `access_service_token` hint, the service token's ID (`access.token_id`).
+            the `access_service_token` hint, the service token's handle (`access.token_id`),
+            exactly as the exchange returned it: its ID alone revokes nothing.
         token_type_hint:
           type: string
           enum:

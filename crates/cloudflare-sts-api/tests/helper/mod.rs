@@ -409,12 +409,29 @@ pub async fn revoke(token: Option<&str>) -> Reply {
     }
 }
 
-/// Revokes an Access service token by its ID.
-pub async fn revoke_access(id: &str) -> Reply {
+/// The handle the broker gives out for the Access service token `id`, as it
+/// signs it with `CLOUDFLARE_TOKEN`.
+pub fn service_token_handle(id: &str) -> String {
+    use hmac::{KeyInit, Mac};
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(CLOUDFLARE_TOKEN.as_bytes())
+        .expect("HMAC takes a key of any length");
+    mac.update(b"cloudflare-sts:access-service-token:");
+    mac.update(id.as_bytes());
+    let mac = mac.finalize().into_bytes();
+    format!("{id}.{}", URL_SAFE_NO_PAD.encode(mac))
+}
+
+/// The ID a service token's handle is for.
+pub fn service_token_id(handle: &str) -> &str {
+    handle.rsplit_once('.').map_or(handle, |(id, _)| id)
+}
+
+/// Revokes an Access service token by `token`: its handle, or whatever else.
+pub async fn revoke_access(token: &str) -> Reply {
     post_form(
         "/oauth/revoke",
         &[
-            ("token", id),
+            ("token", token),
             (
                 "token_type_hint",
                 "urn:cloudflare-sts:params:oauth:token-type:access_service_token",
