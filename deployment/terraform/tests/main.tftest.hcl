@@ -20,7 +20,7 @@ override_data {
         node_id              = "RA_test2"
         size                 = 1
         updated_at           = "2026-10-02T00:00:00Z"
-        url                  = "https://api.github.com/repos/cf-contrib/cloudflare-sts/releases/assets/2"
+        url                  = "https://api.github.com/repos/pdeslaur/cloudflare-sts/releases/assets/2"
       },
       {
         name                 = "index_bg.wasm.base64"
@@ -32,7 +32,7 @@ override_data {
         node_id              = "RA_test3"
         size                 = 1
         updated_at           = "2026-10-02T00:00:00Z"
-        url                  = "https://api.github.com/repos/cf-contrib/cloudflare-sts/releases/assets/3"
+        url                  = "https://api.github.com/repos/pdeslaur/cloudflare-sts/releases/assets/3"
       },
       {
         name                 = "SHA256SUMS"
@@ -44,7 +44,7 @@ override_data {
         node_id              = "RA_test4"
         size                 = 1
         updated_at           = "2026-10-02T00:00:00Z"
-        url                  = "https://api.github.com/repos/cf-contrib/cloudflare-sts/releases/assets/4"
+        url                  = "https://api.github.com/repos/pdeslaur/cloudflare-sts/releases/assets/4"
       },
     ]
   }
