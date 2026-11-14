@@ -48,18 +48,6 @@ jobs:
           nix develop --command npm ci
           nix develop --command npm run generate
           git diff --exit-code .
-      - name: Install Action
-        working-directory: action
-        run: nix develop --command npm ci
-      - name: Lint Action
-        working-directory: action
-        run: nix develop --command npm run lint
-      - name: Typecheck Action
-        working-directory: action
-        run: nix develop --command npm run typecheck
-      - name: Test Action
-        working-directory: action
-        run: nix develop --command npm test
       - name: Check Rust Formatting
         run: nix develop --command cargo fmt --all --check
       - name: Test Rust
@@ -79,66 +67,8 @@ jobs:
           nix develop --command tofu validate
           nix develop --command tofu test
 
-  # Runs the action from a fresh checkout with nothing installed, against a stub
-  # broker that also stands in for the runner's OIDC endpoint. Catches runtime
-  # imports from outside action/ and broken action.yml paths.
-  smoke:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Start Stub Broker
-        run: |
-          node action/test/stub.js > "$RUNNER_TEMP/stub.log" 2>&1 &
-          for _ in $(seq 20); do grep -q listening "$RUNNER_TEMP/stub.log" && exit 0; sleep 0.5; done
-          cat "$RUNNER_TEMP/stub.log"; exit 1
-      - name: Leave Stale AWS Credentials
-        run: |
-          echo "AWS_ACCESS_KEY_ID=stale-access-key-id" >> "$GITHUB_ENV"
-          echo "AWS_SESSION_TOKEN=stale-session-token" >> "$GITHUB_ENV"
-      # The stub answers profile smoke-r2 as a profile with a bucket and no token.
-      - name: Run cloudflare-sts (r2 only)
-        uses: ./
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:8787/oidc?api-version=2.0
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: stub-request-token
-        with:
-          url: http://127.0.0.1:8787
-          scopes: smoke-r2
-      - name: Check Exported R2 Credentials
-        run: |
-          test -z "$CLOUDFLARE_API_TOKEN"   # r2 only: no API token
-          test "$CLOUDFLARE_ACCOUNT_ID" = 0123456789abcdef0123456789abcdef
-          test "$CLOUDFLARE_R2_ACCESS_KEY_ID" = stub-r2-access-key-id
-          test "$CLOUDFLARE_R2_SECRET_ACCESS_KEY" = stub-r2-secret-access-key
-          test "$CLOUDFLARE_R2_SESSION_TOKEN" = stub-r2-session-token
-          test "$CLOUDFLARE_R2_ENDPOINT" = https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com
-          test "$CLOUDFLARE_R2_BUCKET" = org-terraform-state
-          test "$CLOUDFLARE_R2_PREFIX" = github.com/example-org/app/
-          test "$CLOUDFLARE_R2_PREFIXES" = '["github.com/example-org/app/"]'
-          test "$AWS_ACCESS_KEY_ID" = stale-access-key-id   # AWS_* is left alone
-          test "$AWS_SESSION_TOKEN" = stale-session-token
-          test -z "$AWS_SECRET_ACCESS_KEY$AWS_ENDPOINT_URL_S3"
-      - name: Run cloudflare-sts (token)
-        uses: ./
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:8787/oidc?api-version=2.0
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: stub-request-token
-        with:
-          url: http://127.0.0.1:8787
-          scopes: smoke
-          ttl: 5m
-      - name: Check Exported Token
-        run: |
-          test "$CLOUDFLARE_API_TOKEN" = stub-cloudflare-token
-          test "$CLOUDFLARE_ACCOUNT_ID" = 0123456789abcdef0123456789abcdef
-          test "${{ env.CLOUDFLARE_ACCOUNT_ID }}" = 0123456789abcdef0123456789abcdef
-
   release:
-    needs: [test, smoke]
+    needs: [test]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:

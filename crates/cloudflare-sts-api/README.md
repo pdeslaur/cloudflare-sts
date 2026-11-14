@@ -521,7 +521,7 @@ curl -sS https://cloudflare-sts-api.example.com/oauth/revoke -d token="$CLOUDFLA
 
 For the caller's own mistakes (400) the description says what was wrong, for example `no profile matches the token`, `profiles a, b all match the token: name one`, `unknown profile x`, `profile example-org:workers-deploy isn't for provider com.gitlab`, `profile x is disabled` or `profile x doesn't match the token`. That tells a caller with a valid token which profile names exist. For the broker's faults (500, 503) the description is generic, and the logs say why.
 
-**Contract:** [`stsv1.tsp`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.tsp), in TypeSpec, compiled to the OpenAPI document [`stsv1.yaml`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.yaml). The Worker's types, server and router are generated from it, and requests that don't fit it are refused (`400`) before any handler runs. The action's [`api.ts`](../../action/src/api.ts) mirrors it.
+**Contract:** [`stsv1.tsp`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.tsp), in TypeSpec, compiled to the OpenAPI document [`stsv1.yaml`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.yaml). The Worker's types, server and router are generated from it, and requests that don't fit it are refused (`400`) before any handler runs. [cf-contrib/cloudflare-sts](https://github.com/cf-contrib/cloudflare-sts)'s action calls it.
 
 ## Security
 

@@ -16,27 +16,6 @@ updates:
       prefix: "chore"
       include: "scope"
   - package-ecosystem: "npm"
-    directory: "/action"
-    schedule:
-      interval: "weekly"
-    # Lets a new release age a few days before it's proposed.
-    cooldown:
-      default-days: 3
-    ignore:
-      # The action runs on node24; keep the types on the same major.
-      - dependency-name: "@types/node"
-        update-types: ["version-update:semver-major"]
-    open-pull-requests-limit: 10
-    groups:
-      all-npm:
-        patterns: ["*"]
-    labels:
-      - "dependencies"
-      - "auto-merge"
-    commit-message:
-      prefix: "chore"
-      include: "scope"
-  - package-ecosystem: "npm"
     directory: "/crates/cloudflare-sts-api"
     schedule:
       interval: "weekly"
