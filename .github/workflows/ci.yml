@@ -18,20 +18,20 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
+        uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
       # The dev shell's store paths, so the Rust toolchain and the tools are
       # fetched again only when the flake or the toolchain changes.
       - name: Cache Nix Store
-        uses: nix-community/cache-nix-action@v7
+        uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
       # Cargo's downloads and build outputs. A new Cargo.lock starts from the
       # last build with the same toolchain.
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry/index
@@ -80,7 +80,7 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       # release-please opens its pull request with an octo-sts token rather
@@ -93,7 +93,7 @@ jobs:
           identity: release
       - name: Create Release PR
         id: release
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         with:
           manifest-file: .github/config/release-please-manifest.json
           config-file: .github/config/release-please-config.json
@@ -109,27 +109,19 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release.outputs.tag_name }}
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
-      # The caches the test job saved on main.
+        uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+      # The Nix store the test job saved on main. Cargo's cache isn't restored:
+      # the release is built from source, never from build outputs another
+      # job left behind.
       - name: Restore Nix Store
-        uses: nix-community/cache-nix-action/restore@v7
+        uses: nix-community/cache-nix-action/restore@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-      - name: Restore Cargo
-        uses: actions/cache/restore@v6
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: cargo-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}-
       # The Worker as deployment/terraform uploads it: worker-build's index.js, and
       # the wasm as base64 text, so Terraform can check its checksum.
       - name: Build
@@ -141,7 +133,7 @@ jobs:
           base64 -w0 build/index_bg.wasm > "$RUNNER_TEMP/release/index_bg.wasm.base64"
           cd "$RUNNER_TEMP/release" && sha256sum index.js index_bg.wasm.base64 > SHA256SUMS
       - name: Upload Release Assets
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           tag_name: ${{ needs.release.outputs.tag_name }}
           files: |

@@ -175,11 +175,6 @@ async fn send_as_caller(config: &Config, req: Request) -> Result<Vec<String>, Re
         .filter(|token| !token.is_empty())
         .map(String::from)
         .ok_or_else(|| Refused::invalid_token("a bearer token is required"))?;
-    let raw = to_bytes(req.into_body(), MAX_MESSAGE_BYTES)
-        .await
-        .map_err(|_| Refused::invalid_request("the message is over 25 MiB"))?;
-    let raw = String::from_utf8(raw.to_vec())
-        .map_err(|_| Refused::invalid_request("the message isn't UTF-8"))?;
 
     // Who the caller is, as for an exchange: its provider, which must admit it.
     let policy = config.policy();
@@ -212,6 +207,14 @@ async fn send_as_caller(config: &Config, req: Request) -> Result<Vec<String>, Re
         )));
     };
     check_envelope(email, &envelope)?;
+
+    // The message is read only for a caller the profile lets send: up to
+    // 25 MiB is never buffered for anyone else.
+    let raw = to_bytes(req.into_body(), MAX_MESSAGE_BYTES)
+        .await
+        .map_err(|_| Refused::invalid_request("the message is over 25 MiB"))?;
+    let raw = String::from_utf8(raw.to_vec())
+        .map_err(|_| Refused::invalid_request("the message isn't UTF-8"))?;
     let header_from = header_from(&raw).ok_or_else(|| {
         Refused::invalid_request("the message must have one From with one address")
     })?;
@@ -309,13 +312,40 @@ fn header_from(raw: &str) -> Option<String> {
         return None;
     };
 
-    let address = match value.rsplit_once('<') {
+    // One mailbox only: outside a quoted display name, a `,` separates
+    // mailboxes and a `;` ends a group (RFC 5322 §3.4), so a list can't pass
+    // for its last address.
+    let bare = unquoted(value)?;
+    if bare.contains([',', ';']) || bare.matches('<').count() > 1 {
+        return None;
+    }
+    let address = match bare.rsplit_once('<') {
         Some((_, rest)) => rest.split_once('>')?.0,
         None => value,
     }
     .trim();
     check_address(address).ok()?;
     Some(address.to_string())
+}
+
+/// `value` without its quoted strings (RFC 5322 §3.2.4), which a display name
+/// may be, and which may hold anything. `None` when a quote is left open.
+fn unquoted(value: &str) -> Option<String> {
+    let mut bare = String::new();
+    let mut quoted = false;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            // A quoted pair: the next character is taken as it is.
+            '\\' if quoted => {
+                chars.next();
+            }
+            _ if !quoted => bare.push(c),
+            _ => {}
+        }
+    }
+    (!quoted).then_some(bare)
 }
 
 #[cfg(test)]
@@ -341,6 +371,25 @@ mod tests {
             ("Subject: x\r\n\r\nFrom: noreply@example.com", None),
             ("From: a@example.com\r\nFrom: b@example.com\r\n\r\n", None),
             ("From: a@example.com, b@example.com\r\n\r\n", None),
+            // A list doesn't pass for its last mailbox.
+            (
+                "From: CEO <ceo@bank.example>, x <noreply@example.com>\r\n\r\n",
+                None,
+            ),
+            (
+                "From: <ceo@bank.example> <noreply@example.com>\r\n\r\n",
+                None,
+            ),
+            (
+                "From: Team: CEO <ceo@bank.example>;, <noreply@example.com>\r\n\r\n",
+                None,
+            ),
+            // A quoted display name may hold anything.
+            (
+                "From: \"Alerts <ops>, \\\"prod\\\"\" <noreply@example.com>\r\n\r\n",
+                Some("noreply@example.com"),
+            ),
+            ("From: \"Gatus <noreply@example.com>\r\n\r\n", None),
             ("From: Gatus\r\n\r\n", None),
             ("To: a@example.com\r\n\r\n", None),
         ] {

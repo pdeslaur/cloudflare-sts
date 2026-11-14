@@ -25,7 +25,8 @@
 //!
 //! No method authenticates: by the time an exchange reaches one, the auth
 //! [`layer`](super::layer) has, and the handler takes the caller's identity
-//! from it.
+//! from it. It does ask the policy again whether the caller's provider admits
+//! it, since a token is held as verified whether or not it was admitted.
 
 use std::sync::Arc;
 
@@ -518,6 +519,15 @@ impl TokenServiceApi for TokenServiceHandler {
                     .provider_for(&identity.claims)
                     .map_err(|why| invalid_request(&why))?;
                 let (identity, provider) = &*caller.insert((identity, provider));
+                // A token is held as verified before its provider admits it,
+                // so that's asked again here: the tenant's pin never rests on
+                // the layer alone.
+                if !policy.admit(&provider.name, &identity.claims).allowed {
+                    return Err(invalid_request(&format!(
+                        "the policy doesn't admit the token to provider {}",
+                        provider.name
+                    )));
+                }
 
                 // The scopes asked for are profiles, a space-delimited list.
                 let scopes: Vec<&str> = request
