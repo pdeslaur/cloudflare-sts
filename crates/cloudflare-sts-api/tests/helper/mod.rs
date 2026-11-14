@@ -18,6 +18,7 @@ use axum::{
     routing::{any, get},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use p256::ecdsa::{Signature as EcSignature, SigningKey as EcSigningKey};
 use rand_chacha::{ChaCha8Rng, rand_core::SeedableRng};
 use rsa::{
     RsaPrivateKey,
@@ -59,6 +60,16 @@ const KID: &str = "test-key";
 static KEY: LazyLock<RsaPrivateKey> = LazyLock::new(|| {
     RsaPrivateKey::new(&mut ChaCha8Rng::seed_from_u64(11), 2048).expect("the key generates")
 });
+
+/// The `spire` stand-in's keys, from fixed seeds: the one that signs its
+/// JWT-SVIDs, and its X.509 authority, which its bundle lists but marks
+/// `x509-svid`, so it must never verify a token.
+pub const SPIFFE_JWT_KID: &str = "jwt-authority";
+pub const SPIFFE_X509_KID: &str = "x509-authority";
+pub static SPIFFE_JWT_KEY: LazyLock<EcSigningKey> =
+    LazyLock::new(|| EcSigningKey::random(&mut ChaCha8Rng::seed_from_u64(12)));
+pub static SPIFFE_X509_KEY: LazyLock<EcSigningKey> =
+    LazyLock::new(|| EcSigningKey::random(&mut ChaCha8Rng::seed_from_u64(13)));
 
 /// An issuer the stand-ins serve: `http://127.0.0.1:8791/issuers/<name>`.
 pub fn issuer(name: &str) -> String {
@@ -263,14 +274,28 @@ pub fn sign(claims: Value) -> String {
 
 /// A token from `iss` for `aud`, expiring in `ttl` seconds, with `claims`.
 pub fn sign_with(iss: &str, claims: Value, aud: &str, ttl: i64) -> String {
+    let input = signing_input(json!({ "alg": "RS256", "kid": KID }), iss, claims, aud, ttl);
+    let signature = SigningKey::<Sha256>::new(KEY.clone()).sign(input.as_bytes());
+    format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_vec()))
+}
+
+/// A JWT-SVID from the `spire` stand-in for the broker, with `claims`, signed
+/// ES256 by `key` and naming `kid`.
+pub fn sign_svid(key: &EcSigningKey, kid: &str, claims: Value) -> String {
+    let header = json!({ "alg": "ES256", "kid": kid, "typ": "JWT" });
+    let input = signing_input(header, &issuer("spire"), claims, AUDIENCE, 300);
+    let signature: EcSignature = key.sign(input.as_bytes());
+    format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+}
+
+/// `<header>.<payload>` of a token from `iss` for `aud`, expiring in `ttl`
+/// seconds, with `claims`.
+fn signing_input(header: Value, iss: &str, claims: Value, aud: &str, ttl: i64) -> String {
     let now = now() as i64;
     let mut payload = json!({ "iss": iss, "aud": aud, "iat": now, "exp": now + ttl });
     merge(&mut payload, claims);
-    let header = json!({ "alg": "RS256", "kid": KID });
     let encode = |value: &Value| URL_SAFE_NO_PAD.encode(value.to_string());
-    let input = format!("{}.{}", encode(&header), encode(&payload));
-    let signature = SigningKey::<Sha256>::new(KEY.clone()).sign(input.as_bytes());
-    format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_vec()))
+    format!("{}.{}", encode(&header), encode(&payload))
 }
 
 pub struct Reply {
@@ -408,7 +433,15 @@ async fn discovery(Path(name): Path<String>) -> Json<Value> {
     Json(json!({ "issuer": issuer, "jwks_uri": format!("{issuer}/.well-known/jwks") }))
 }
 
-async fn jwks() -> Json<Value> {
+/// An issuer's JWK Set: `spire`'s is a SPIFFE bundle, with an X.509
+/// authority and a JWT signing key, both P-256; the others' is the RSA key.
+async fn jwks(Path(name): Path<String>) -> Json<Value> {
+    if name == "spire" {
+        return Json(json!({ "spiffe_sequence": 1, "keys": [
+            ec_jwk(&SPIFFE_X509_KEY, SPIFFE_X509_KID, "x509-svid"),
+            ec_jwk(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, "jwt-svid"),
+        ]}));
+    }
     Json(json!({ "keys": [{
         "kty": "RSA",
         "kid": KID,
@@ -746,4 +779,17 @@ pub fn with(mut value: Value, extra: Value) -> Value {
 
 pub fn obj(value: &Value) -> &Map<String, Value> {
     value.as_object().unwrap()
+}
+
+/// `key`'s public JWK, as a SPIFFE bundle lists it: with no `alg`.
+fn ec_jwk(key: &EcSigningKey, kid: &str, use_: &str) -> Value {
+    let point = key.verifying_key().to_encoded_point(false);
+    json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "kid": kid,
+        "use": use_,
+        "x": URL_SAFE_NO_PAD.encode(point.x().unwrap()),
+        "y": URL_SAFE_NO_PAD.encode(point.y().unwrap()),
+    })
 }

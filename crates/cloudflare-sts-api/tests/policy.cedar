@@ -23,6 +23,10 @@ when { context.namespace_id == "4000001" };
 permit (principal, action == Admit::Action::"typed", resource)
 when { context.namespace_id == "4000001" };
 
+@id("admit-spire")
+permit (principal, action == Admit::Action::"spire", resource)
+when { context.sub like "spiffe://example.org/*" };
+
 @id("admit-access")
 permit (principal, action == Admit::Action::"access", resource)
 when { context.iss == "http://127.0.0.1:8791/issuers/access" };
@@ -103,6 +107,10 @@ when { context.project_path like "group/sub/*" };
 @id("allow-pinned-state")
 permit (principal, action == Profile::Action::"pinned-state", resource)
 when { context.namespace_id == "4000001" };
+
+@id("allow-spire-deploy")
+permit (principal, action == Profile::Action::"spire-deploy", resource)
+when { context.sub == "spiffe://example.org/svc/app" };
 
 @id("allow-example-org/app:tofu-plan")
 permit (principal, action == Profile::Action::"example-org/app:tofu-plan", resource)

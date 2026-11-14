@@ -1,8 +1,8 @@
-//! RS256 (RSASSA-PKCS1-v1_5 with SHA-256) through the runtime's WebCrypto, for
-//! verifying and signing alike: no RSA crate ends up in the wasm, and a
-//! signing key never leaves WebCrypto.
+//! RS256 (RSASSA-PKCS1-v1_5 with SHA-256) and ES256 (ECDSA on P-256 with
+//! SHA-256) through the runtime's WebCrypto, for verifying and signing alike:
+//! no RSA or ECDSA crate ends up in the wasm, and a signing key never leaves
+//! WebCrypto.
 
-use serde_json::json;
 use web_sys::{CryptoKey, SubtleCrypto, WorkerGlobalScope};
 use worker::{
     js_sys::{self, Uint8Array},
@@ -10,31 +10,29 @@ use worker::{
     wasm_bindgen_futures::JsFuture,
 };
 
-use crate::oidc::{ALGORITHM, KeyError};
+use crate::oidc::{Algorithm, KeyError};
 
-/// Whether `signature` is the RS256 signature of `signing_input` by the RSA
-/// public key `n` and `e`, base64url. A signature WebCrypto refuses to check,
-/// such as one of the wrong length, isn't.
-pub(crate) async fn verify_rs256(
-    n: &str,
-    e: &str,
+/// Whether `signature` is the `alg` signature of `signing_input` by the public
+/// key `jwk`, a JWK of the type `alg` takes. A signature WebCrypto refuses to
+/// check, such as one of the wrong length, isn't.
+pub(crate) async fn verify(
+    alg: Algorithm,
+    jwk: &serde_json::Value,
     signing_input: &[u8],
     signature: &[u8],
 ) -> Result<bool, KeyError> {
     let subtle = subtle()?;
-    let algorithm = rs256()?;
-    let jwk = json!({ "kty": "RSA", "n": n, "e": e, "alg": ALGORITHM });
     let jwk: js_sys::Object = js_sys::JSON::parse(&jwk.to_string())
         .map(JsCast::unchecked_into)
         .map_err(error)?;
     let usages = js_sys::Array::of1(&JsValue::from_str("verify"));
     let key: CryptoKey =
-        promised(subtle.import_key_with_object("jwk", &jwk, &algorithm, false, &usages))
+        promised(subtle.import_key_with_object("jwk", &jwk, &import_params(alg)?, false, &usages))
             .await?
             .unchecked_into();
 
     let verified = subtle.verify_with_object_and_buffer_source_and_buffer_source(
-        &algorithm,
+        &verify_params(alg)?,
         &key,
         &Uint8Array::from(signature),
         &Uint8Array::from(signing_input),
@@ -69,9 +67,25 @@ pub(crate) async fn promised(
     JsFuture::from(promise.map_err(error)?).await.map_err(error)
 }
 
-/// RS256's WebCrypto algorithm.
-pub(crate) fn rs256() -> Result<js_sys::Object, KeyError> {
-    js_sys::JSON::parse(r#"{"name":"RSASSA-PKCS1-v1_5","hash":"SHA-256"}"#)
+/// `alg`'s WebCrypto algorithm for importing a key.
+pub(crate) fn import_params(alg: Algorithm) -> Result<js_sys::Object, KeyError> {
+    params(match alg {
+        Algorithm::Rs256 => r#"{"name":"RSASSA-PKCS1-v1_5","hash":"SHA-256"}"#,
+        Algorithm::Es256 => r#"{"name":"ECDSA","namedCurve":"P-256"}"#,
+    })
+}
+
+/// `alg`'s WebCrypto algorithm for signing and verifying. JWS's ES256
+/// signatures are `r || s` (RFC 7518 §3.4), as WebCrypto's ECDSA takes them.
+pub(crate) fn verify_params(alg: Algorithm) -> Result<js_sys::Object, KeyError> {
+    params(match alg {
+        Algorithm::Rs256 => r#"{"name":"RSASSA-PKCS1-v1_5","hash":"SHA-256"}"#,
+        Algorithm::Es256 => r#"{"name":"ECDSA","hash":"SHA-256"}"#,
+    })
+}
+
+fn params(json: &str) -> Result<js_sys::Object, KeyError> {
+    js_sys::JSON::parse(json)
         .map(JsCast::unchecked_into)
         .map_err(error)
 }

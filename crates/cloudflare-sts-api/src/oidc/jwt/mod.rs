@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 pub(crate) use self::claims::LEEWAY_SECS;
 pub use self::{
     claims::Claims,
-    headers::{ALGORITHM, Header},
+    headers::{Algorithm, Header},
 };
 use crate::oidc::{Error, error::invalid};
 
@@ -27,6 +27,8 @@ pub struct Jwt {
 /// A JWT as it was sent: decoded, not yet verified.
 pub(crate) struct Unverified<'a> {
     pub(crate) jwt: Jwt,
+    /// The algorithm its `alg` names.
+    pub(crate) alg: Algorithm,
     /// `<header>.<payload>`, the bytes the signature covers.
     pub(crate) signing_input: &'a str,
     pub(crate) signature: Vec<u8>,
@@ -34,8 +36,8 @@ pub(crate) struct Unverified<'a> {
 
 impl<'a> Unverified<'a> {
     /// Decodes `token`, and validates its JOSE Header (RFC 7519 §7.2): its
-    /// `alg` must be RS256, and it may not have a `crit` (RFC 7515 §4.1.11),
-    /// since no extension is understood.
+    /// `alg` must name an [`Algorithm`], and it may not have a `crit` (RFC
+    /// 7515 §4.1.11), since no extension is understood.
     pub(crate) fn decode(token: &'a str) -> Result<Self, Error> {
         let not_a_jwt = || invalid("not a JWT");
         let segment = |s: &str| URL_SAFE_NO_PAD.decode(s).map_err(|_| not_a_jwt());
@@ -51,15 +53,15 @@ impl<'a> Unverified<'a> {
         let header: Header =
             serde_json::from_value(Value::Object(header)).map_err(|_| not_a_jwt())?;
         let claims: Claims = serde_json::from_slice(&segment(payload)?).map_err(|_| not_a_jwt())?;
-        if header.alg != ALGORITHM {
-            return Err(invalid("alg must be RS256"));
-        }
+        let alg = Algorithm::from_name(&header.alg)
+            .ok_or_else(|| invalid("alg must be RS256 or ES256"))?;
         if crit {
             return Err(invalid("crit names extensions that aren't supported"));
         }
 
         Ok(Self {
             jwt: Jwt { header, claims },
+            alg,
             signing_input: &token[..token.len() - signature.len() - 1],
             signature: segment(signature)?,
         })
@@ -121,8 +123,14 @@ mod tests {
                 ),
                 "not a JWT",
             ),
-            (with_header(json!({ "alg": "none" })), "alg must be RS256"),
-            (with_header(json!({ "alg": "HS256" })), "alg must be RS256"),
+            (
+                with_header(json!({ "alg": "none" })),
+                "alg must be RS256 or ES256",
+            ),
+            (
+                with_header(json!({ "alg": "HS256" })),
+                "alg must be RS256 or ES256",
+            ),
             (
                 with_header(json!({ "alg": "RS256", "crit": ["exp"], "exp": 1 })),
                 "crit names extensions that aren't supported",

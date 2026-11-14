@@ -7,7 +7,7 @@
 //! 1. [`Providers::verify`] validates it as RFC 7519 §7.2 and RFC 8725 say.
 //!    It picks its [`Provider`] by its `iss` claim, which must be one a
 //!    provider names exactly, and checks its JOSE [`Header`]. Its RS256
-//!    signature is checked with the runtime's WebCrypto against that issuer's
+//!    or ES256 signature is checked with the runtime's WebCrypto against that issuer's
 //!    keys, found through its metadata (or a configured `jwks_uri`) and never
 //!    through anything in the token. Then its registered [`Claims`] are
 //!    validated: `iss`, `aud`, `exp` and `nbf`.
@@ -32,7 +32,7 @@
 //! - `verify`: the resource server's side: providers and the tokens verified
 //!   from them, their `keys` (RFC 7517) and `metadata` (OpenID Connect
 //!   Discovery, RFC 8414), and the claim rules' `policy`;
-//! - `crypto`: RS256 through WebCrypto;
+//! - `crypto`: RS256 and ES256 through WebCrypto;
 //! - `error`: what goes wrong.
 
 mod crypto;
@@ -42,6 +42,6 @@ mod verify;
 
 pub use crate::oidc::{
     error::{Error, KeyError},
-    jwt::{ALGORITHM, Claims, Header, Jwt},
+    jwt::{Algorithm, Claims, Header, Jwt},
     verify::{Provider, Providers, check_url, verified},
 };

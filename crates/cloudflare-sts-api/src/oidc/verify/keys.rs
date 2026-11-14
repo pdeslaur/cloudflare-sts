@@ -1,14 +1,15 @@
-//! An issuer's keys: its JWK Set (RFC 7517), the RSA public keys (RFC 7518
-//! §6.3) in it that verify RS256 signatures, fetching it, and caching it per
-//! isolate.
+//! An issuer's keys: its JWK Set (RFC 7517), the RSA (RFC 7518 §6.3) and
+//! P-256 (§6.2) public keys in it that verify RS256 and ES256 signatures,
+//! fetching it, and caching it per isolate.
 
 use std::{cell::RefCell, collections::HashMap};
 
 use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use worker::{AbortSignal, Fetch, Method, Request};
 
 use super::metadata;
-use crate::oidc::{ALGORITHM, Error, crypto, error::invalid};
+use crate::oidc::{Algorithm, Error, crypto, error::invalid};
 
 /// How long a fetched JWK Set is trusted before it's fetched again.
 const JWKS_TTL_MS: u64 = 10 * 60 * 1000;
@@ -22,16 +23,18 @@ thread_local! {
     static KEYS: RefCell<HashMap<String, KeySet>> = RefCell::new(HashMap::new());
 }
 
-/// `issuer`'s key that `kid` names, or its only one when there's no `kid`:
+/// `issuer`'s key for `alg` that `kid` names, or its only one for `alg` when
+/// there's no `kid`:
 /// cached, or fetched from `jwks_uri`, or the `jwks_uri` in its metadata.
 pub(super) async fn find(
     issuer: &str,
     jwks_uri: Option<&str>,
     kid: Option<&str>,
+    alg: Algorithm,
     now_ms: u64,
-) -> Result<RsaKey, Error> {
+) -> Result<Key, Error> {
     let unknown = || invalid("unknown signing key");
-    match KEYS.with_borrow(|sets| KeySet::lookup(sets.get(issuer), kid, now_ms)) {
+    match KEYS.with_borrow(|sets| KeySet::lookup(sets.get(issuer), kid, alg, now_ms)) {
         Lookup::Hit(key) => return Ok(key),
         Lookup::Unknown => return Err(unknown()),
         Lookup::Fetch => {}
@@ -43,10 +46,10 @@ pub(super) async fn find(
     };
     let jwks: JwkSet = fetch_json(&jwks_uri).await?;
     let set = KeySet {
-        keys: jwks.rs256_keys(),
+        keys: jwks.signing_keys(),
         fetched_at: now_ms,
     };
-    let key = set.find(kid).cloned();
+    let key = set.find(kid, alg).cloned();
     KEYS.with_borrow_mut(|sets| sets.insert(issuer.to_string(), set));
     key.ok_or_else(unknown)
 }
@@ -109,7 +112,7 @@ struct JwkSet {
 }
 
 /// A JWK (RFC 7517 §4), with the members an RSA public key (RFC 7518 §6.3.1)
-/// is read by.
+/// or an elliptic curve public key (§6.2.1) is read by.
 #[derive(Deserialize)]
 struct Jwk {
     kty: String,
@@ -120,97 +123,129 @@ struct Jwk {
     kid: Option<String>,
     n: Option<String>,
     e: Option<String>,
+    crv: Option<String>,
+    x: Option<String>,
+    y: Option<String>,
 }
 
 impl Jwk {
-    /// Whether it may verify RS256 signatures: an RSA key that, if it says
-    /// what it's for, says signatures (RFC 7517 §4.2, §4.3) with RS256
-    /// (§4.4; RFC 8725 §3.1).
-    fn verifies_rs256(&self) -> bool {
-        self.kty == "RSA"
-            && self.use_.as_deref().is_none_or(|use_| use_ == "sig")
+    /// Whether it may verify signatures: if it says what it's for, it says
+    /// signatures (RFC 7517 §4.2, §4.3). A SPIFFE bundle (SPIFFE Trust Domain
+    /// and Bundle §4.2.2) says `jwt-svid` for the keys that sign JWT-SVIDs,
+    /// and `x509-svid` for X.509 authorities, which never sign tokens.
+    fn verifies(&self) -> bool {
+        self.use_
+            .as_deref()
+            .is_none_or(|use_| use_ == "sig" || use_ == "jwt-svid")
             && (self.key_ops.as_ref()).is_none_or(|ops| ops.iter().any(|op| op == "verify"))
-            && self.alg.as_deref().is_none_or(|alg| alg == ALGORITHM)
+    }
+
+    /// The algorithm it verifies, from its type and curve: RS256 for an RSA
+    /// key, ES256 for a P-256 one. One whose `alg` names another algorithm
+    /// (RFC 7517 §4.4; RFC 8725 §3.1) verifies none.
+    fn algorithm(&self) -> Option<Algorithm> {
+        let alg = match (self.kty.as_str(), self.crv.as_deref()) {
+            ("RSA", _) => Algorithm::Rs256,
+            ("EC", Some("P-256")) => Algorithm::Es256,
+            _ => return None,
+        };
+        self.alg
+            .as_deref()
+            .is_none_or(|named| named == alg.name())
+            .then_some(alg)
+    }
+
+    /// It as a [`Key`], if it's one that verifies signatures and has the
+    /// members its type needs.
+    fn key(self) -> Option<Key> {
+        if !self.verifies() {
+            return None;
+        }
+        let alg = self.algorithm()?;
+        let jwk = match alg {
+            Algorithm::Rs256 => json!({ "kty": "RSA", "n": self.n?, "e": self.e? }),
+            Algorithm::Es256 => {
+                json!({ "kty": "EC", "crv": "P-256", "x": self.x?, "y": self.y? })
+            }
+        };
+        Some(Key {
+            kid: self.kid,
+            alg,
+            jwk,
+        })
     }
 }
 
-/// An issuer's RSA public key.
+/// An issuer's public key, and the one algorithm it verifies.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct RsaKey {
+pub(crate) struct Key {
     kid: Option<String>,
-    n: String,
-    e: String,
+    alg: Algorithm,
+    /// The JWK WebCrypto imports: only the public members its type needs.
+    jwk: Value,
 }
 
-impl RsaKey {
+impl Key {
     /// Its `kid`, if it has one.
     pub(crate) fn kid(&self) -> Option<&str> {
         self.kid.as_deref()
     }
 
-    /// Whether `signature` is its RS256 signature of `signing_input`, checked
-    /// with WebCrypto.
+    /// Whether `signature` is its signature of `signing_input`, with its
+    /// algorithm, checked with WebCrypto.
     pub(crate) async fn verify(
         &self,
         signing_input: &[u8],
         signature: &[u8],
     ) -> Result<bool, Error> {
-        crypto::verify_rs256(&self.n, &self.e, signing_input, signature)
+        crypto::verify(self.alg, &self.jwk, signing_input, signature)
             .await
             .map_err(|err| Error::TemporarilyUnavailable(err.to_string()))
     }
 }
 
 impl JwkSet {
-    /// The keys in it that verify RS256 signatures. Any others are skipped, as
-    /// RFC 7517 §5 says keys that aren't understood are.
-    fn rs256_keys(self) -> Vec<RsaKey> {
-        self.keys
-            .into_iter()
-            .filter(Jwk::verifies_rs256)
-            .filter_map(|key| {
-                Some(RsaKey {
-                    kid: key.kid,
-                    n: key.n?,
-                    e: key.e?,
-                })
-            })
-            .collect()
+    /// The keys in it that verify RS256 or ES256 signatures. Any others are
+    /// skipped, as RFC 7517 §5 says keys that aren't understood are.
+    fn signing_keys(self) -> Vec<Key> {
+        self.keys.into_iter().filter_map(Jwk::key).collect()
     }
 }
 
 /// An issuer's keys, cached per isolate.
 struct KeySet {
-    keys: Vec<RsaKey>,
+    keys: Vec<Key>,
     fetched_at: u64,
 }
 
 #[derive(Debug, PartialEq)]
 enum Lookup {
-    Hit(RsaKey),
+    Hit(Key),
     Fetch,
     /// Unknown `kid`, and the JWK Set was fetched too recently to try again.
     Unknown,
 }
 
 impl KeySet {
-    /// The key with this `kid`; without one, the only key there is.
-    fn find(&self, kid: Option<&str>) -> Option<&RsaKey> {
+    /// The key for `alg` with this `kid`; without one, the only key for `alg`
+    /// there is. A key never verifies another algorithm's signatures.
+    fn find(&self, kid: Option<&str>, alg: Algorithm) -> Option<&Key> {
+        let mut keys = self.keys.iter().filter(|key| key.alg == alg);
         match kid {
-            Some(kid) => self.keys.iter().find(|key| key.kid() == Some(kid)),
-            None => match self.keys.as_slice() {
-                [only] => Some(only),
+            Some(kid) => keys.find(|key| key.kid() == Some(kid)),
+            None => match (keys.next(), keys.next()) {
+                (Some(only), None) => Some(only),
                 _ => None,
             },
         }
     }
 
-    fn lookup(set: Option<&KeySet>, kid: Option<&str>, now_ms: u64) -> Lookup {
+    fn lookup(set: Option<&KeySet>, kid: Option<&str>, alg: Algorithm, now_ms: u64) -> Lookup {
         let Some(set) = set else {
             return Lookup::Fetch;
         };
         let age = now_ms.saturating_sub(set.fetched_at);
-        match set.find(kid) {
+        match set.find(kid, alg) {
             Some(key) if age < JWKS_TTL_MS => Lookup::Hit(key.clone()),
             Some(_) => Lookup::Fetch,
             None if age < JWKS_MIN_REFETCH_MS => Lookup::Unknown,
@@ -225,21 +260,93 @@ mod tests {
 
     use super::*;
 
+    const RS256: Algorithm = Algorithm::Rs256;
+    const ES256: Algorithm = Algorithm::Es256;
+
+    fn kids(jwks: Value) -> Vec<(String, Algorithm)> {
+        let jwks: JwkSet = serde_json::from_value(jwks).unwrap();
+        jwks.signing_keys()
+            .into_iter()
+            .map(|key| (key.kid.unwrap(), key.alg))
+            .collect()
+    }
+
     #[test]
-    fn keeps_only_keys_that_verify_rs256() {
-        let jwks: JwkSet = serde_json::from_value(json!({ "keys": [
+    fn keeps_only_keys_that_verify_rs256_or_es256() {
+        let ec = |kid: &str, extra: Value| {
+            let mut key = json!({ "kty": "EC", "crv": "P-256", "kid": kid, "x": "AA", "y": "AA" });
+            key.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            key
+        };
+        let kept = kids(json!({ "keys": [
             { "kty": "RSA", "kid": "plain", "n": "AQAB", "e": "AQAB" },
             { "kty": "RSA", "kid": "sig", "use": "sig", "alg": "RS256", "key_ops": ["verify"], "n": "AQAB", "e": "AQAB" },
             { "kty": "RSA", "kid": "enc", "use": "enc", "n": "AQAB", "e": "AQAB" },
             { "kty": "RSA", "kid": "rs512", "alg": "RS512", "n": "AQAB", "e": "AQAB" },
+            { "kty": "RSA", "kid": "rsa-es256", "alg": "ES256", "n": "AQAB", "e": "AQAB" },
             { "kty": "RSA", "kid": "encrypt", "key_ops": ["encrypt"], "n": "AQAB", "e": "AQAB" },
             { "kty": "RSA", "kid": "no-modulus", "e": "AQAB" },
-            { "kty": "EC", "kid": "ec", "x": "AA", "y": "AA" },
+            ec("ec", json!({})),
+            ec("ec-sig", json!({ "use": "sig", "alg": "ES256" })),
+            ec("ec-rs256", json!({ "alg": "RS256" })),
+            ec("ec-es384", json!({ "alg": "ES384" })),
+            ec("p384", json!({ "crv": "P-384" })),
+            ec("no-y", json!({ "y": null })),
+            { "kty": "EC", "kid": "no-curve", "x": "AA", "y": "AA" },
+            { "kty": "OKP", "kid": "ed25519", "crv": "Ed25519", "x": "AA" },
+        ]}));
+        let kept: Vec<_> = kept.iter().map(|(kid, _)| kid.as_str()).collect();
+        assert_eq!(kept, ["plain", "sig", "ec", "ec-sig"]);
+    }
+
+    #[test]
+    fn keeps_a_spiffe_bundles_jwt_svid_keys_only() {
+        let key = |kid: &str, use_: &str| json!({ "kty": "EC", "crv": "P-256", "kid": kid, "use": use_, "x": "AA", "y": "AA" });
+        let kept = kids(json!({ "keys": [
+            key("authority", "x509-svid"),
+            key("jwt", "jwt-svid"),
+            { "kty": "RSA", "kid": "rsa-jwt", "use": "jwt-svid", "n": "AQAB", "e": "AQAB" },
+        ]}));
+        assert_eq!(
+            kept,
+            [("jwt".to_string(), ES256), ("rsa-jwt".to_string(), RS256)]
+        );
+    }
+
+    #[test]
+    fn imports_only_the_public_members() {
+        let jwks: JwkSet = serde_json::from_value(json!({ "keys": [
+            { "kty": "EC", "crv": "P-256", "kid": "ec", "x": "AA", "y": "BB", "d": "secret", "use": "jwt-svid" },
         ]}))
         .unwrap();
-        let keys = jwks.rs256_keys();
-        let kids: Vec<_> = keys.iter().filter_map(RsaKey::kid).collect();
-        assert_eq!(kids, ["plain", "sig"]);
+        let keys = jwks.signing_keys();
+        assert_eq!(
+            keys[0].jwk,
+            json!({ "kty": "EC", "crv": "P-256", "x": "AA", "y": "BB" })
+        );
+    }
+
+    #[test]
+    fn finds_a_key_only_for_its_own_algorithm() {
+        let jwks: JwkSet = serde_json::from_value(json!({ "keys": [
+            { "kty": "RSA", "kid": "rsa", "n": "AQAB", "e": "AQAB" },
+            { "kty": "EC", "crv": "P-256", "kid": "ec", "x": "AA", "y": "AA" },
+        ]}))
+        .unwrap();
+        let set = KeySet {
+            keys: jwks.signing_keys(),
+            fetched_at: 0,
+        };
+        let found = |kid, alg| set.find(kid, alg).and_then(Key::kid);
+        assert_eq!(found(Some("rsa"), RS256), Some("rsa"));
+        assert_eq!(found(Some("ec"), ES256), Some("ec"));
+        assert_eq!(found(Some("rsa"), ES256), None);
+        assert_eq!(found(Some("ec"), RS256), None);
+        // Without a kid, the only key for the algorithm, though there are two.
+        assert_eq!(found(None, RS256), Some("rsa"));
+        assert_eq!(found(None, ES256), Some("ec"));
     }
 
     #[test]
@@ -270,30 +377,30 @@ mod tests {
         ]}))
         .unwrap();
         let set = KeySet {
-            keys: jwks.rs256_keys(),
+            keys: jwks.signing_keys(),
             fetched_at: 0,
         };
 
-        assert_eq!(KeySet::lookup(None, Some("key-1"), 0), Lookup::Fetch);
+        assert_eq!(KeySet::lookup(None, Some("key-1"), RS256, 0), Lookup::Fetch);
         assert!(matches!(
-            KeySet::lookup(Some(&set), Some("key-1"), 1),
+            KeySet::lookup(Some(&set), Some("key-1"), RS256, 1),
             Lookup::Hit(_)
         ));
         // Without a kid, the only key.
         assert!(matches!(
-            KeySet::lookup(Some(&set), None, 1),
+            KeySet::lookup(Some(&set), None, RS256, 1),
             Lookup::Hit(_)
         ));
         assert_eq!(
-            KeySet::lookup(Some(&set), Some("key-1"), JWKS_TTL_MS),
+            KeySet::lookup(Some(&set), Some("key-1"), RS256, JWKS_TTL_MS),
             Lookup::Fetch
         );
         assert_eq!(
-            KeySet::lookup(Some(&set), Some("key-2"), 1),
+            KeySet::lookup(Some(&set), Some("key-2"), RS256, 1),
             Lookup::Unknown
         );
         assert_eq!(
-            KeySet::lookup(Some(&set), Some("key-2"), JWKS_MIN_REFETCH_MS),
+            KeySet::lookup(Some(&set), Some("key-2"), RS256, JWKS_MIN_REFETCH_MS),
             Lookup::Fetch
         );
     }
