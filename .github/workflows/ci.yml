@@ -13,11 +13,33 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 30
+    env:
+      # Incremental builds only make the cache bigger in CI.
+      CARGO_INCREMENTAL: 0
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v23
+        uses: nixbuild/nix-quick-install-action@v35
+      # The dev shell's store paths, so the Rust toolchain and the tools are
+      # fetched again only when the flake or the toolchain changes.
+      - name: Cache Nix Store
+        uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      # Cargo's downloads and build outputs. A new Cargo.lock starts from the
+      # last build with the same toolchain.
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}-
       # The OpenAPI document is compiled from TypeSpec and checked in, so it
       # must be what the .tsp compiles to.
       - name: Check OpenAPI Document
@@ -161,7 +183,23 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag_name }}
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v23
+        uses: nixbuild/nix-quick-install-action@v35
+      # The caches the test job saved on main.
+      - name: Restore Nix Store
+        uses: nix-community/cache-nix-action/restore@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - name: Restore Cargo
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ hashFiles('flake.lock', 'rust-toolchain.toml') }}-
       # The Worker as deployment/terraform uploads it: worker-build's index.js, and
       # the wasm as base64 text, so Terraform can check its checksum.
       - name: Build
