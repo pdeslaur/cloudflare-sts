@@ -1,6 +1,6 @@
 // The broker's OAuth contract. It compiles to stsv1.yaml beside it, which
-// crates/cloudflare-sts-sdk generates the Rust types, server and client from;
-// keep action/src/api.ts, which the action type-checks against, in step.
+// crates/cloudflare-sts-sdk generates the Rust types, server and client from; keep
+// cf-contrib/cloudflare-sts's action, which calls it, working.
 import "@typespec/http";
 import "@typespec/openapi";
 import "@typespec/openapi3";
