@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/octo-sts/app/refs/heads/main/pkg/octosts/octosts.TrustPolicy.json
+# Allows the Auto Merge workflow, as it is on main, to enable auto-merge on
+# Dependabot's and the flake.lock update's pull requests.
+issuer: https://token.actions.githubusercontent.com
+# GitHub names the owner and repository with their IDs in the subject.
+subject: repo:pdeslaur@1692704/cloudflare-sts@1457856570:pull_request
+claim_pattern:
+    actor: (dependabot|octo-sts)\[bot\]
+    event_name: pull_request_target
+    job_workflow_ref: pdeslaur/cloudflare-sts/\.github/workflows/merge\.yml@refs/heads/main
+
+permissions:
+    contents: write
+    pull_requests: write
