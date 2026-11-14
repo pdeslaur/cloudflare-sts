@@ -377,6 +377,31 @@ The job gets a client ID and secret, which it sends as the `CF-Access-Client-Id`
 - **Parent token:** the Cloudflare token needs **Access: Service Tokens Write**. That doesn't widen what a leaked Cloudflare token can do: with Account API Tokens Write it could already mint itself anything.
 - **What it doesn't do:** Access can't tell reads from writes, so a token admits its application whole. And a rule that admits *any* valid service token (rather than this tag) would admit every token in the account, whoever made it.
 
+### Tunnels
+
+A profile's `tunnel` gets its caller the credentials of a locally-managed [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/), with a secret set for it, so a `cloudflared` connector holds no long-lived tunnel token:
+
+```toml
+[[profiles]]
+name     = "homelab:tunnel.app"
+provider = "spire"
+tunnel   = { id = "c1744f8b-faa1-48a4-9e5c-02ac921467fa" }
+```
+
+The exchange answers with `issued_token_type` `urn:cloudflare-sts:params:oauth:token-type:tunnel_credentials` and a `tunnel` object, which is cloudflared's credentials file under other names:
+
+```json
+{"tunnel": {"account_tag": "<account id>", "tunnel_id": "c1744f8b-…", "tunnel_secret": "<base64>"}, "issued_token_type": "urn:cloudflare-sts:params:oauth:token-type:tunnel_credentials", "token_type": "N_A", "scope": "homelab:tunnel.app", "account_id": "<account id>"}
+```
+
+Write it as `{"AccountTag": …, "TunnelID": …, "TunnelSecret": …}` and run `cloudflared tunnel --credentials-file <file> run`.
+
+- **A new secret on every exchange.** The broker sets 32 random bytes as the tunnel's secret (`PATCH /accounts/{account_id}/cfd_tunnel/{id}`), so the previous secret no longer registers connections. A connector that's already running keeps its connections, but can't reconnect with the old secret: run one connector per tunnel, and exchange only when it starts.
+- **Nothing to expire or revoke.** The response has no `expires_in` or `expires_at`; the secret lasts until the next exchange. `ttl` is ignored.
+- **Alone.** A profile with a `tunnel` has no `token`, `bucket` or `access`, and a request for several scopes can't include it.
+- **Locally-managed tunnels.** Cloudflare sets a secret only on a tunnel whose configuration is local (`config_src = "local"`), whose routes are in cloudflared's own `config.yml`.
+- **Parent token:** the Cloudflare token needs **Cloudflare Tunnel Write**, which reaches every tunnel in the account: the profile, not the token, limits which one a caller gets. A policy whose profiles are all tunnels needs nothing else, and the hourly cleanup then lists nothing.
+
 ### TTL and names
 
 - Durations look like `90s`, `15m`, `1h`, `1h30m`: each unit once, largest first.
@@ -494,6 +519,7 @@ They're combined into one grant:
 - **Token:** their `token.policies` together, as one token, so it can do what each of them could.
 - **Bucket:** at most one of them may have a `bucket`, because the credentials are for one bucket. Two is `invalid_scope`.
 - **Access:** at most one of them may have an `access`, because a service token is for one application. Two is `invalid_scope`.
+- **Tunnel:** a profile with a `tunnel` is asked for alone. With any other, the request is `invalid_scope`.
 - **Lifetime:** the shortest `ttl` and the shortest `max_ttl` among them, so nothing outlives what any of them allows.
 
 ```sh
@@ -561,6 +587,12 @@ An Access service token is `access.issued`, with the application and the token's
 
 ```json
 {"level":"INFO","event":"access.issued","provider":"com.github.actions","profile":"example-org/app:ci.nix","sub":"repo:example-org/app:ref:refs/heads/main","claims":"{\"ref\":\"refs/heads/main\"}","audience":"https://nix.example.com","token_id":"<uuid>","expires_at":1790961140}
+```
+
+A tunnel's new secret is `tunnel.rotate`, with the tunnel's ID, never the secret:
+
+```json
+{"level":"INFO","event":"tunnel.rotate","provider":"spire","profile":"homelab:tunnel.app","sub":"spiffe://example.org/svc/app","claims":"{\"sub\":\"spiffe://example.org/svc/app\"}","tunnel_id":"c1744f8b-faa1-48a4-9e5c-02ac921467fa"}
 ```
 
 Denials are `token.deny`, a warning, with the response's `error`, and its `error_description` as `message`. For the broker's own faults, the message is the full one the caller doesn't get:

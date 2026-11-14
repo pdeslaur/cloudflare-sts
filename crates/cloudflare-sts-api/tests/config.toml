@@ -176,6 +176,12 @@ permissions = ["Workers Scripts Write"]
 resources = { "com.cloudflare.api.account.0123456789abcdef0123456789abcdef" = "*" }
 
 [[profiles]]
+name = "tunnel.app"
+provider = "spire"
+forward_claims = ["sub"]
+tunnel = { id = "c1744f8b-faa1-48a4-9e5c-02ac921467fa" }
+
+[[profiles]]
 name = "pinned-state"
 provider = "pinned"
 forward_claims = ["namespace_id"]

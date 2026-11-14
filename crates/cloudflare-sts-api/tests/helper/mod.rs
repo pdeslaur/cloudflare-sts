@@ -48,6 +48,13 @@ pub const CACHE: &str = "https://cloudflare-nix-api.example.com";
 pub const CLOUDFLARE_TOKEN: &str = "test-cloudflare-token";
 pub const CLOUDFLARE_TOKEN_ID: &str = "tok-cloudflare";
 
+/// The tunnels the stand-in Cloudflare has: `tunnel.app`'s, in `tests/config.toml`, and
+/// one no profile names.
+pub const APP_TUNNEL: &str = "c1744f8b-faa1-48a4-9e5c-02ac921467fa";
+pub const OTHER_TUNNEL: &str = "5d0f4f8e-7d2c-4c0e-9a51-6f3be0d1c2a4";
+pub const TUNNEL_CREDENTIALS: &str =
+    "urn:cloudflare-sts:params:oauth:token-type:tunnel_credentials";
+
 pub const GRANT: &str = "urn:ietf:params:oauth:grant-type:token-exchange";
 pub const ID_TOKEN: &str = "urn:ietf:params:oauth:token-type:id_token";
 pub const ACCESS_TOKEN: &str = "urn:ietf:params:oauth:token-type:access_token";
@@ -515,10 +522,13 @@ pub struct StoredServiceToken {
 pub struct FakeCloudflare {
     pub tokens: BTreeMap<String, StoredToken>,
     pub service_tokens: BTreeMap<String, StoredServiceToken>,
+    /// The account's tunnels, by ID: the secret last set on each, if any.
+    pub tunnels: BTreeMap<String, Option<String>>,
     pub requests: Vec<CloudflareRequest>,
     pub fail_create: bool,
     pub fail_r2: bool,
     pub fail_access: bool,
+    pub fail_tunnel: bool,
     seq: u32,
 }
 
@@ -552,10 +562,15 @@ impl FakeCloudflare {
         let mut fake = Self {
             tokens: BTreeMap::new(),
             service_tokens: BTreeMap::new(),
+            tunnels: [APP_TUNNEL, OTHER_TUNNEL]
+                .into_iter()
+                .map(|id| (id.to_string(), None))
+                .collect(),
             requests: Vec::new(),
             fail_create: false,
             fail_r2: false,
             fail_access: false,
+            fail_tunnel: false,
             seq: 0,
         };
         fake.add(
@@ -659,6 +674,21 @@ impl FakeCloudflare {
             return api_error(403, "Unauthorized");
         }
 
+        if method == Method::PATCH
+            && let Some(id) = path.strip_prefix(&format!("{acct}/cfd_tunnel/"))
+        {
+            if self.fail_tunnel {
+                return api_error(500, "Internal Server Error");
+            }
+            let Some(secret) = self.tunnels.get_mut(id) else {
+                return api_error(404, "Tunnel not found");
+            };
+            *secret = body
+                .as_ref()
+                .and_then(|body| body["tunnel_secret"].as_str())
+                .map(String::from);
+            return envelope(json!({ "id": id, "config_src": "local" }));
+        }
         if method == Method::POST && path == format!("{acct}/tokens") {
             if self.fail_create {
                 return api_error(500, "Internal Server Error");
