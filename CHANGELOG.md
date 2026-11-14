@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.24.0](https://github.com/pdeslaur/cloudflare-sts/compare/v0.23.0...v0.24.0) (2026-11-14)
+
+
+### Features
+
+* email profiles, sent through POST /email and send_email ([#10](https://github.com/pdeslaur/cloudflare-sts/issues/10)) ([99b8a29](https://github.com/pdeslaur/cloudflare-sts/commit/99b8a290266afa7876da88d806385e8b9b39e83b))
+* **oidc:** verify ES256 tokens and SPIFFE bundles' JWT keys ([82a7e66](https://github.com/pdeslaur/cloudflare-sts/commit/82a7e663144f859df7e060558646c6178bfb4946))
+* **terraform:** look up releases of pdeslaur/cloudflare-sts ([43214de](https://github.com/pdeslaur/cloudflare-sts/commit/43214decb3179766db4bb9008fc1b5ecce4c2793))
+* tunnel profiles that rotate a tunnel's secret on every exchange ([#9](https://github.com/pdeslaur/cloudflare-sts/issues/9)) ([5894b94](https://github.com/pdeslaur/cloudflare-sts/commit/5894b94cf1aa5488e533c9bcc17b13701801ad01))
+
 ## [0.23.0](https://github.com/cf-contrib/cloudflare-sts/compare/v0.22.0...v0.23.0) (2026-11-14)
 
 
