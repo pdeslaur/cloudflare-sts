@@ -13,7 +13,9 @@
 //! config, which reads the secrets.
 
 pub mod access;
+pub mod acme;
 pub mod authz;
+pub mod bearer;
 pub mod config;
 pub mod email;
 pub mod handler;

@@ -379,6 +379,18 @@ impl PolicyConfig {
             .any(|p| p.token.is_some() || p.access.is_some())
     }
 
+    /// The zones the acme profiles answer challenges in, each once.
+    pub fn acme_zones(&self) -> Vec<&str> {
+        let mut zones: Vec<&str> = self
+            .profiles
+            .iter()
+            .filter_map(|p| p.acme.as_ref().map(|acme| acme.zone.as_str()))
+            .collect();
+        zones.sort_unstable();
+        zones.dedup();
+        zones
+    }
+
     /// Whether `provider` lets the token with `claims` in at all: its tenant,
     /// pinned. Checked as the token is verified.
     pub fn admit(&self, provider: &str, claims: &Map<String, Value>) -> Verdict {
@@ -655,6 +667,10 @@ pub struct ProfileConfig {
     /// Who its caller may send email as, and to, through `POST /email`. A
     /// profile with one has nothing else, and is never exchanged for.
     pub email: Option<EmailConfig>,
+    /// The ACME DNS-01 challenges its caller may answer, through `PUT` and
+    /// `DELETE /acme`. A profile with one has nothing else, and is never
+    /// exchanged for.
+    pub acme: Option<AcmeConfig>,
 }
 
 impl ProfileConfig {
@@ -752,6 +768,12 @@ impl ProfileConfig {
                 email.name
             ));
         }
+        if let Some(acme) = profiles.iter().find(|p| p.acme.is_some()) {
+            return Err(format!(
+                "scope {} is for ACME challenges, which PUT /acme does",
+                acme.name
+            ));
+        }
         if let Some(tunnel) = profiles.iter().find(|p| p.tunnel.is_some()) {
             return Err(format!(
                 "scope {} is a tunnel's, which can't be combined with other scopes: ask for it alone",
@@ -807,6 +829,7 @@ impl ProfileConfig {
             access: profiles.iter().find_map(|p| p.access.clone()),
             tunnel: None,
             email: None,
+            acme: None,
         })
     }
 
@@ -815,29 +838,42 @@ impl ProfileConfig {
         check_forward_claims(&self.forward_claims)
             .map_err(|why| format!("{at}.forward_claims {why}"))?;
 
+        // A tunnel, an email and an acme each stand alone.
         let grants = self.token.is_some() || self.bucket.is_some() || self.access.is_some();
-        match (&self.tunnel, &self.email) {
-            (Some(_), Some(_)) => {
-                return Err(format!("{at} can't have both a tunnel and an email"));
+        let alone: Vec<&str> = [
+            (self.tunnel.is_some(), "a tunnel"),
+            (self.email.is_some(), "an email"),
+            (self.acme.is_some(), "an acme"),
+        ]
+        .into_iter()
+        .filter_map(|(has, kind)| has.then_some(kind))
+        .collect();
+        match alone[..] {
+            [first, second, ..] => {
+                return Err(format!("{at} can't have both {first} and {second}"));
             }
-            (Some(_), None) | (None, Some(_)) if grants => {
-                let kind = if self.tunnel.is_some() {
-                    "a tunnel"
-                } else {
-                    "an email"
-                };
+            [kind] if grants => {
                 return Err(format!(
                     "{at} has {kind}, so it can't also have a token, a bucket or an access"
                 ));
             }
-            (Some(tunnel), None) => return tunnel.check(&format!("{at}.tunnel")),
-            (None, Some(email)) => return email.check(&format!("{at}.email")),
-            (None, None) if !grants => {
+            [_] => {
+                if let Some(tunnel) = &self.tunnel {
+                    return tunnel.check(&format!("{at}.tunnel"));
+                }
+                if let Some(email) = &self.email {
+                    return email.check(&format!("{at}.email"));
+                }
+                if let Some(acme) = &self.acme {
+                    return acme.check(&format!("{at}.acme"));
+                }
+            }
+            [] if !grants => {
                 return Err(format!(
-                    "{at} must have a token, a bucket, an access, or a mix, or a tunnel, or an email"
+                    "{at} must have a token, a bucket, an access, or a mix, or a tunnel, an email or an acme"
                 ));
             }
-            (None, None) => {}
+            [] => {}
         }
 
         if let Some(token) = &self.token {
@@ -1173,6 +1209,85 @@ impl EmailConfig {
             check_address(address).map_err(|why| format!("{at}.{field}: {address} {why}"))?;
         }
         Ok(())
+    }
+}
+
+/// The label an ACME DNS-01 challenge's record name starts with (RFC 8555
+/// §8.4).
+pub const CHALLENGE_LABEL: &str = "_acme-challenge.";
+
+/// The ACME DNS-01 challenges a profile's caller may answer, through `PUT`
+/// and `DELETE /acme`: TXT records at `_acme-challenge.<name>`, in one zone,
+/// which the broker writes and removes with the Cloudflare token.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcmeConfig {
+    /// The ID of the zone every name is in.
+    pub zone: String,
+    /// The names it may prove control of, as a certificate has them:
+    /// `*.example.com` is answered at the same record as `example.com`.
+    pub names: Vec<String>,
+}
+
+impl AcmeConfig {
+    /// Whether `record`, a full record name, is the challenge record of one
+    /// of its names. Compared without case or a trailing dot.
+    pub fn answers_at(&self, record: &str) -> bool {
+        let record = record
+            .strip_suffix('.')
+            .unwrap_or(record)
+            .to_ascii_lowercase();
+        let Some(name) = record.strip_prefix(CHALLENGE_LABEL) else {
+            return false;
+        };
+        self.names
+            .iter()
+            .any(|n| n.strip_prefix("*.").unwrap_or(n) == name)
+    }
+
+    fn check(&self, at: &str) -> Result<(), String> {
+        check_zone_id(&self.zone).map_err(|why| format!("{at}.zone {why}"))?;
+        if self.names.is_empty() {
+            return Err(format!("{at}.names must name at least one domain"));
+        }
+        for name in &self.names {
+            check_domain(name).map_err(|why| format!("{at}.names: {name} {why}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether `id` is a zone's ID: 32 lowercase hex digits. It's put in an API
+/// path, so nothing else is taken.
+fn check_zone_id(id: &str) -> Result<(), &'static str> {
+    if id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        Ok(())
+    } else {
+        Err("must be a zone's ID, 32 lowercase hex digits")
+    }
+}
+
+/// Whether `name` is a domain a certificate may name: lowercase ASCII
+/// labels of letters, digits and inner hyphens, at least two, the first of
+/// which may be `*`.
+fn check_domain(name: &str) -> Result<(), &'static str> {
+    let bare = name.strip_prefix("*.").unwrap_or(name);
+    let labels: Vec<&str> = bare.split('.').collect();
+    let valid = bare.len() <= 253
+        && labels.len() >= 2
+        && labels.iter().all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err("isn't a lowercase domain such as app.example.com or *.example.com")
     }
 }
 
@@ -2243,6 +2358,111 @@ pub(super) mod tests {
         ] {
             let err = parse_err(&with_profile(profile));
             assert!(err.contains(why), "{why}: {err}");
+        }
+    }
+
+    const ZONE_ID: &str = "fedcba9876543210fedcba9876543210";
+
+    fn acme_profile() -> Value {
+        json!({ "name": "acme.app", "acme": { "zone": ZONE_ID, "names": ["app.example.com", "*.apps.example.com"] } })
+    }
+
+    #[test]
+    fn an_acme_profile_answers_only_at_its_names_challenge_records() {
+        let parsed = parse(&with_profile(acme_profile()));
+        let acme = parsed
+            .profiles
+            .iter()
+            .find_map(|p| p.acme.as_ref())
+            .expect("the profile has its acme");
+        for record in [
+            "_acme-challenge.app.example.com",
+            "_ACME-Challenge.App.Example.com.",
+            // A wildcard's challenge is at its base name.
+            "_acme-challenge.apps.example.com",
+        ] {
+            assert!(acme.answers_at(record), "{record}");
+        }
+        for record in [
+            "app.example.com",
+            "_acme-challenge.example.com",
+            "_acme-challenge.other.example.com",
+            "_acme-challenge.x.apps.example.com",
+            "_acme-challenge.*.apps.example.com",
+            "_acme-challenge.app.example.com.evil.com",
+            "x._acme-challenge.app.example.com",
+        ] {
+            assert!(!acme.answers_at(record), "{record}");
+        }
+    }
+
+    #[test]
+    fn an_acme_profile_is_never_combined() {
+        let policy = with_profile(acme_profile());
+        assert_eq!(
+            scoped(&policy, claims(), &["deploy", "acme.app"]),
+            err("scope acme.app is for ACME challenges, which PUT /acme does")
+        );
+        assert_eq!(parse(&policy).acme_zones(), [ZONE_ID]);
+    }
+
+    #[test]
+    fn rejects_a_bad_acme_profile() {
+        let mut with_token = acme_profile();
+        with_token["token"] = token();
+        let mut with_email = email_profile();
+        with_email["acme"] = acme_profile()["acme"].clone();
+        for (profile, why) in [
+            (
+                with_token,
+                "profiles[2] has an acme, so it can't also have a token",
+            ),
+            (
+                with_email,
+                "profiles[2] can't have both an email and an acme",
+            ),
+            (
+                json!({ "name": "acme.app", "acme": { "zone": ZONE_ID, "names": [] } }),
+                "profiles[2].acme.names must name at least one domain",
+            ),
+            (
+                json!({ "name": "acme.app", "acme": { "zone": "example.com", "names": ["app.example.com"] } }),
+                "profiles[2].acme.zone must be a zone's ID",
+            ),
+            (
+                json!({ "name": "acme.app", "acme": { "zone": ZONE_ID, "names": ["App.example.com"] } }),
+                "profiles[2].acme.names: App.example.com isn't a lowercase domain",
+            ),
+        ] {
+            let err = parse_err(&with_profile(profile));
+            assert!(err.contains(why), "{why}: {err}");
+        }
+    }
+
+    #[test]
+    fn checks_certificate_domains() {
+        for ok in [
+            "example.com",
+            "app.example.com",
+            "*.example.com",
+            "a-1.example.com",
+        ] {
+            assert_eq!(check_domain(ok), Ok(()), "{ok}");
+        }
+        for bad in [
+            "",
+            "localhost",
+            "*.com",
+            "a.*.example.com",
+            "**.example.com",
+            "-a.example.com",
+            "a-.example.com",
+            "a..example.com",
+            "_acme-challenge.example.com",
+            "app.example.com.",
+            "app example.com",
+        ] {
+            assert!(check_domain(bad).is_err(), "{bad}");
         }
     }
 

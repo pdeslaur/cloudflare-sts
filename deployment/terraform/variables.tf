@@ -34,7 +34,7 @@ variable "cloudflare_token_secret" {
     secret_store_id = string
     secret_name     = string
   })
-  description = "Secrets Store secret holding the Cloudflare token: an account-owned token with \"Account API Tokens Write\", plus R2 permissions covering what profiles' buckets delegate (it creates those credentials and is their parent), plus \"Access: Service Tokens Write\" if any profile has an `access`, plus \"Cloudflare Tunnel Write\" if any profile has a `tunnel`. An `email` needs no permission: the `email` binding sends it. With only tunnel and email profiles, \"Cloudflare Tunnel Write\" is all it needs. Terraform only references it; the value never enters state."
+  description = "Secrets Store secret holding the Cloudflare token: an account-owned token with \"Account API Tokens Write\", plus R2 permissions covering what profiles' buckets delegate (it creates those credentials and is their parent), plus \"Access: Service Tokens Write\" if any profile has an `access`, plus \"Cloudflare Tunnel Write\" if any profile has a `tunnel`, plus \"DNS Write\" on the zones of profiles with an `acme`. An `email` needs no permission: the `email` binding sends it. With only tunnel, email and acme profiles, those are all it needs. Terraform only references it; the value never enters state."
 }
 
 variable "email" {
@@ -71,7 +71,7 @@ variable "profiles" {
   # Untyped: a token policy's resources are flat or nested maps, as Cloudflare
   # takes them, and no one Terraform type holds both. The broker checks them.
   type        = any
-  description = "What callers may get: the policy's profiles. A list of objects, each with a name, optionally the forward_claims to copy into a token for a service, and a token, a bucket, an access (an Access service token), a service's audience, a tunnel (whose secret each exchange sets), or an email (who POST /email sends as and to), as the broker's README describes. Who gets each is the `cedar_policy`'s."
+  description = "What callers may get: the policy's profiles. A list of objects, each with a name, optionally the forward_claims to copy into a token for a service, and a token, a bucket, an access (an Access service token), a service's audience, a tunnel (whose secret each exchange sets), an email (who POST /email sends as and to), or an acme (the ACME challenges PUT /acme answers), as the broker's README describes. Who gets each is the `cedar_policy`'s."
 
   validation {
     condition     = try(length(var.profiles) > 0 && alltrue([for profile in var.profiles : length(profile.name) > 0]), false)

@@ -568,6 +568,12 @@ impl TokenServiceApi for TokenServiceHandler {
                         format!("scope {} is for sending email, which POST /email does", profile.name),
                     ));
                 }
+                if profile.acme.is_some() {
+                    return Err(Error::new(
+                        ErrorCode::InvalidScope,
+                        format!("scope {} is for ACME challenges, which PUT /acme does", profile.name),
+                    ));
+                }
                 // A tunnel's credentials don't expire, so there's no TTL to
                 // take.
                 if let Some(tunnel) = &profile.tunnel {

@@ -4,11 +4,10 @@
 //!
 //! Not in the API's spec, as the health endpoints aren't: its body is a raw
 //! message (RFC 5322) up to Cloudflare's 25 MiB, which the generated router,
-//! with its form bodies and 16 KiB limit, doesn't take. It's a resource that
-//! takes a bearer token (RFC 6750), not an OAuth endpoint, and answers as one:
+//! with its form bodies and 16 KiB limit, doesn't take. It takes a bearer
+//! token, as [`super::bearer`] has it:
 //!
-//! - `Authorization: Bearer <token>`, an OIDC token from a provider the policy
-//!   names, verified as an exchange's subject token is;
+//! - `Authorization: Bearer <token>`;
 //! - `profile`, `from` and `to` (once per recipient) in the query: the email
 //!   profile the token must be allowed, the envelope sender, which the
 //!   message's `From` must be, and the envelope recipients, as an SMTP relay
@@ -28,15 +27,17 @@ use axum::{
     Json,
     body::to_bytes,
     extract::{Request, State},
-    http::{HeaderValue, StatusCode, header},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
 use tracing::{error, info, warn};
 use worker::{EmailMessage, send::SendFuture};
 
-use super::config::{Config, EmailConfig, Refusal, check_address};
-use crate::oidc;
+use super::{
+    bearer::{Caller, Refused, authorize},
+    config::{Config, EmailConfig, check_address},
+};
 
 /// Where it's served.
 pub const EMAIL_PATH: &str = "/email";
@@ -46,61 +47,6 @@ const MAX_MESSAGE_BYTES: usize = 25 * 1024 * 1024;
 
 /// The most recipients Cloudflare sends one message to.
 const MAX_RECIPIENTS: usize = 50;
-
-/// Why a message wasn't sent: the status, and the error (RFC 6750 §3.1, or
-/// RFC 6749 §4.1.2.1's `temporarily_unavailable` and `server_error`) with
-/// its description.
-struct Refused {
-    status: StatusCode,
-    error: &'static str,
-    description: String,
-}
-
-impl Refused {
-    fn invalid_request(description: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, "invalid_request", description)
-    }
-
-    fn invalid_token(description: impl Into<String>) -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "invalid_token", description)
-    }
-
-    fn insufficient_scope(description: impl Into<String>) -> Self {
-        Self::new(StatusCode::FORBIDDEN, "insufficient_scope", description)
-    }
-
-    fn unavailable(description: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "temporarily_unavailable",
-            description,
-        )
-    }
-
-    fn new(status: StatusCode, error: &'static str, description: impl Into<String>) -> Self {
-        Self {
-            status,
-            error,
-            description: description.into(),
-        }
-    }
-}
-
-impl IntoResponse for Refused {
-    fn into_response(self) -> Response {
-        let body = json!({ "error": self.error, "error_description": self.description });
-        let mut response = (self.status, Json(body)).into_response();
-        if self.status == StatusCode::UNAUTHORIZED {
-            let challenge = format!("Bearer error=\"{}\"", self.error);
-            if let Ok(value) = HeaderValue::from_str(&challenge) {
-                response
-                    .headers_mut()
-                    .insert(header::WWW_AUTHENTICATE, value);
-            }
-        }
-        response
-    }
-}
 
 /// The handler: sends the message, or says why not. Every refusal is logged
 /// as `email.deny`, with its full description, which the caller gets too
@@ -166,40 +112,14 @@ impl Envelope {
 /// returns the message IDs.
 async fn send_as_caller(config: &Config, req: Request) -> Result<Vec<String>, Refused> {
     let envelope = Envelope::parse(req.uri().query())?;
-    let token = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(String::from)
-        .ok_or_else(|| Refused::invalid_token("a bearer token is required"))?;
-
-    // Who the caller is, as for an exchange: its provider, which must admit it.
-    let policy = config.policy();
-    let (provider, jwt) = policy
-        .providers
-        .verify(&token)
-        .await
-        .map_err(|err| match err {
-            oidc::Error::TemporarilyUnavailable(why) => Refused::unavailable(why),
-            err => Refused::invalid_token(err.to_string()),
-        })?;
-    if !policy.admit(&provider.name, &jwt.claims).allowed {
-        return Err(Refused::insufficient_scope(format!(
-            "the policy doesn't admit the token to provider {}",
-            provider.name
-        )));
-    }
 
     // The profile it names, which it must be allowed, and which must be for
     // email; then the envelope, against it.
-    let (profile, _) = policy
-        .profiles_for(&provider.name, &jwt.claims, &[envelope.profile.as_str()])
-        .map_err(|refusal| match refusal {
-            Refusal::Scope(why) | Refusal::Request(why) => Refused::insufficient_scope(why),
-        })?;
+    let Caller {
+        provider,
+        jwt,
+        profile,
+    } = authorize(config, req.headers(), &envelope.profile).await?;
     let Some(email) = &profile.email else {
         return Err(Refused::insufficient_scope(format!(
             "profile {} isn't for email",

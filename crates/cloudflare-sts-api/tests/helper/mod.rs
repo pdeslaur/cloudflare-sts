@@ -558,17 +558,31 @@ pub struct StoredServiceToken {
     pub tags: Value,
 }
 
-/// Cloudflare's account tokens API, permission groups, R2 temporary credentials and Access service tokens, in memory.
+/// A DNS record, in the zone `zone`.
+#[derive(Clone, Debug)]
+pub struct StoredRecord {
+    pub id: String,
+    pub zone: String,
+    pub kind: String,
+    pub name: String,
+    pub content: String,
+    pub comment: Option<String>,
+    pub created_on: String,
+}
+
+/// Cloudflare's account tokens API, permission groups, R2 temporary credentials, Access service tokens and DNS records, in memory.
 pub struct FakeCloudflare {
     pub tokens: BTreeMap<String, StoredToken>,
     pub service_tokens: BTreeMap<String, StoredServiceToken>,
     /// The account's tunnels, by ID: the secret last set on each, if any.
     pub tunnels: BTreeMap<String, Option<String>>,
+    pub records: BTreeMap<String, StoredRecord>,
     pub requests: Vec<CloudflareRequest>,
     pub fail_create: bool,
     pub fail_r2: bool,
     pub fail_access: bool,
     pub fail_tunnel: bool,
+    pub fail_dns: bool,
     seq: u32,
 }
 
@@ -606,11 +620,13 @@ impl FakeCloudflare {
                 .into_iter()
                 .map(|id| (id.to_string(), None))
                 .collect(),
+            records: BTreeMap::new(),
             requests: Vec::new(),
             fail_create: false,
             fail_r2: false,
             fail_access: false,
             fail_tunnel: false,
+            fail_dns: false,
             seq: 0,
         };
         fake.add(
@@ -837,7 +853,110 @@ impl FakeCloudflare {
                 return envelope(json!({ "id": token.id }));
             }
         }
+        if let Some(rest) = path.strip_prefix("/zones/") {
+            return self.handle_dns(method, rest, query, body);
+        }
         api_error(404, &format!("unhandled {method} {path}"))
+    }
+
+    /// Adds a DNS record to `zone`, created `created_on`, and returns it.
+    pub fn add_record(
+        &mut self,
+        zone: &str,
+        kind: &str,
+        name: &str,
+        content: &str,
+        comment: Option<&str>,
+        created_on: String,
+    ) -> StoredRecord {
+        self.seq += 1;
+        let record = StoredRecord {
+            id: format!("rec-{}", self.seq),
+            zone: zone.into(),
+            kind: kind.into(),
+            name: name.into(),
+            content: content.into(),
+            comment: comment.map(String::from),
+            created_on,
+        };
+        self.records.insert(record.id.clone(), record.clone());
+        record
+    }
+
+    fn record_view(record: &StoredRecord) -> Value {
+        json!({ "id": record.id, "type": record.kind, "name": record.name, "content": record.content, "comment": record.comment, "created_on": record.created_on })
+    }
+
+    /// `/zones/<zone>/dns_records[/<id>]`, with `rest` the path after `/zones/`.
+    fn handle_dns(
+        &mut self,
+        method: Method,
+        rest: &str,
+        query: &BTreeMap<String, String>,
+        body: Option<Value>,
+    ) -> Response {
+        if self.fail_dns {
+            return api_error(500, "Internal Server Error");
+        }
+        let (zone, records_path) = rest.split_once('/').unwrap_or((rest, ""));
+        if zone != ZONE_ID {
+            return api_error(404, "Zone not found");
+        }
+        match (method, records_path.strip_prefix("dns_records")) {
+            (Method::GET, Some("")) => {
+                let page = query
+                    .get("page")
+                    .and_then(|p| p.parse::<usize>().ok())
+                    .unwrap_or(1);
+                let matches =
+                    |field: &str, value: &str| query.get(field).is_none_or(|v| v == value);
+                let all: Vec<Value> = self
+                    .records
+                    .values()
+                    .filter(|r| {
+                        r.zone == zone
+                            && matches("type", &r.kind)
+                            && matches("name.exact", &r.name)
+                            && matches("comment.exact", r.comment.as_deref().unwrap_or_default())
+                    })
+                    .map(Self::record_view)
+                    .collect();
+                envelope(if page > 1 { json!([]) } else { json!(all) })
+            }
+            (Method::POST, Some("")) => {
+                let body = body.unwrap_or_default();
+                let field = |name: &str| body[name].as_str().unwrap_or_default().to_string();
+                let duplicate = self.records.values().any(|r| {
+                    r.zone == zone
+                        && r.kind == field("type")
+                        && r.name == field("name")
+                        && r.content == field("content")
+                });
+                if duplicate {
+                    return api_error(400, "An identical record already exists.");
+                }
+                let at = chrono::DateTime::from_timestamp(now() as i64, 0)
+                    .unwrap()
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                let comment = body["comment"].as_str();
+                let record = self.add_record(
+                    zone,
+                    &field("type"),
+                    &field("name"),
+                    &field("content"),
+                    comment,
+                    at,
+                );
+                envelope(Self::record_view(&record))
+            }
+            (Method::DELETE, Some(id)) if id.starts_with('/') => {
+                match self.records.remove(&id[1..]) {
+                    Some(record) => envelope(json!({ "id": record.id })),
+                    None => api_error(404, "Record not found"),
+                }
+            }
+            (method, _) => api_error(404, &format!("unhandled {method} /zones/{rest}")),
+        }
     }
 }
 
@@ -871,6 +990,18 @@ pub async fn send_email(token: Option<&str>, query: &str, raw: &str) -> Reply {
         .post(format!("{BROKER}/email?{query}"))
         .header("content-type", "message/rfc822")
         .body(raw.to_string());
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    reply(request.send().await.expect("the Worker answers")).await
+}
+
+/// `/acme` with `method`, the JSON `body`, and `token` as the bearer token if
+/// there is one.
+pub async fn acme(method: Method, token: Option<&str>, body: Value) -> Reply {
+    let mut request = reqwest::Client::new()
+        .request(method, format!("{BROKER}/acme"))
+        .json(&body);
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }

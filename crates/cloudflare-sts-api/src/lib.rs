@@ -12,7 +12,8 @@
 //! that isn't a Secrets Store binding or an invalid policy, fails every
 //! request instead, with a `server_error`.
 //!
-//! The hourly cron deletes the expired tokens the broker minted.
+//! The hourly cron deletes the expired tokens the broker minted, and the
+//! ACME challenge records it added that clients left behind.
 
 mod oidc;
 mod service;
@@ -31,6 +32,7 @@ use tracing_web::MakeWebConsoleWriter;
 use worker::*;
 
 use crate::service::{
+    acme::{self, ACME_PATH},
     config::Config,
     email::{self, EMAIL_PATH},
     handler::{DiscoveryServiceHandler, TokenServiceHandler},
@@ -68,11 +70,15 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> Result<HttpResponse
                     v1::discovery_service_api_router(DiscoveryServiceHandler::new(config.clone()))
                         .layer(axum::middleware::map_response(cache_publicly)),
                 )
-                // Not in the spec: it takes a raw message, and authenticates
-                // its own bearer token.
+                // Not in the spec: they take a raw message or a challenge,
+                // and authenticate their own bearer token.
                 .merge(
                     axum::Router::new()
                         .route(EMAIL_PATH, axum::routing::post(email::send))
+                        .route(
+                            ACME_PATH,
+                            axum::routing::put(acme::answer).delete(acme::answer),
+                        )
                         .with_state(config.clone()),
                 )
                 // Not in the spec: they're for whoever deploys the Worker, not
@@ -99,13 +105,25 @@ async fn fetch(req: HttpRequest, env: Env, _ctx: Context) -> Result<HttpResponse
     Ok(router.call(req).await?)
 }
 
-/// The hourly cleanup of expired `cloudflare-sts:` tokens.
+/// The hourly cleanup of expired `cloudflare-sts:` tokens, and of the ACME
+/// challenge records clients left behind.
 #[event(scheduled)]
 async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
-    let deleted = match Config::load(&env).await {
-        Ok(config) => TokenServiceHandler::new(Arc::new(config)).cleanup().await,
-        Err(err) => Err(v1::Error::new(ErrorCode::ServerError, err.to_string())),
+    let config = match Config::load(&env).await {
+        Ok(config) => Arc::new(config),
+        Err(err) => {
+            error!(event = "cleanup.failed", error = "server_error", message = %err);
+            return;
+        }
     };
+
+    let now = (Date::now().as_millis() / 1000) as i64;
+    match acme::sweep(&config, now).await {
+        Ok(swept) => info!(event = "acme.sweep.done", swept),
+        Err(why) => error!(event = "acme.sweep.failed", message = %why),
+    }
+
+    let deleted = TokenServiceHandler::new(config).cleanup().await;
     match deleted {
         Ok(deleted) => info!(event = "cleanup.done", deleted),
         Err(err) => error!(
