@@ -7,7 +7,7 @@
 
 ```hcl
 module "cloudflare_sts_api" {
-  source = "git::https://github.com/pdeslaur/cloudflare-sts.git//deployment/terraform?ref=v0.24.1" # x-release-please-version
+  source = "git::https://github.com/pdeslaur/cloudflare-sts.git//modules/api?ref=v0.24.1" # x-release-please-version
 
   account_id              = var.account_id
   hostname                = "cloudflare-sts-api.example.workers.dev"
