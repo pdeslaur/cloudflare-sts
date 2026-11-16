@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.26.0](https://github.com/pdeslaur/cloudflare-sts/compare/v0.25.0...v0.26.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* a profile's acme is a list, acme = [{ zone, names }].
+
+### Features
+
+* let an acme profile answer for names in several zones ([#17](https://github.com/pdeslaur/cloudflare-sts/issues/17)) ([09319f2](https://github.com/pdeslaur/cloudflare-sts/commit/09319f203a79a8dfe226f851b525a6fd19d8b8cd))
+
 ## [0.25.0](https://github.com/pdeslaur/cloudflare-sts/compare/v0.24.1...v0.25.0) (2026-11-16)
 
 
