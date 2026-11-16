@@ -188,6 +188,12 @@ forward_claims = ["sub"]
 email = { from = ["noreply@example.org"], to = ["alerts@example.org", "oncall@example.org"] }
 
 [[profiles]]
+name = "acme.app"
+provider = "spire"
+forward_claims = ["sub"]
+acme = { zone = "fedcba9876543210fedcba9876543210", names = ["app.example.org", "*.apps.example.org"] }
+
+[[profiles]]
 name = "pinned-state"
 provider = "pinned"
 forward_claims = ["namespace_id"]

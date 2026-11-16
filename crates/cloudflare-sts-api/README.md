@@ -418,6 +418,24 @@ email    = { from = ["noreply@example.com"], to = ["alerts@example.com"] }
 - **Never exchanged for.** A profile with an `email` has nothing else, and `POST /oauth/token` refuses it (`invalid_scope`): it's only for `POST /email`.
 - **The binding:** `CLOUDFLARE_STS_API_EMAIL`, a [`send_email`](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/) binding, whose own allowed senders and recipients are a second guard. The Terraform module's `email` variable adds it. Without it, email profiles send nothing (`500`). No API token permission is involved.
 
+### ACME
+
+A profile's `acme` lets its caller answer ACME DNS-01 challenges for the names it lists, through [`PUT` and `DELETE /acme`](#answering-acme-challenges), so a service gets certificates without a DNS token of its own. A Cloudflare API token can't be limited to one record, only to a zone, so the broker writes the record itself:
+
+```toml
+[[profiles]]
+name     = "homelab:acme.app"
+provider = "spire"
+acme     = { zone = "fedcba9876543210fedcba9876543210", names = ["app.example.com", "*.apps.example.com"] }   # example.com
+```
+
+- **`zone`:** the ID of the zone every name is in.
+- **`names`:** the names it may prove control of, lowercase, as a certificate names them. Its caller may write only at `_acme-challenge.<name>`; a wildcard's challenge is at its base name, so `*.apps.example.com` answers at `_acme-challenge.apps.example.com`.
+- **Only a challenge's digest.** The record is TXT, and its value must be 43 characters of base64url (RFC 8555 §8.4), so the profile can't put anything else in the zone.
+- **Only its own records.** The broker marks what it adds with the comment `cloudflare-sts:acme`, and removes only those, by name and value, so two challenges at one name (a name and its wildcard) don't remove each other. The hourly cron removes the ones older than an hour that a client left behind.
+- **Never exchanged for.** A profile with an `acme` has nothing else, and `POST /oauth/token` refuses it (`invalid_scope`): it's only for `/acme`.
+- **Parent token:** the Cloudflare token needs **DNS Write** on each profile's zone. It could mint itself that with Account API Tokens Write already.
+
 ### TTL and names
 
 - Durations look like `90s`, `15m`, `1h`, `1h30m`: each unit once, largest first.
@@ -586,6 +604,27 @@ It's sent once per recipient, since the binding takes one, and answers `200` wit
 
 A relay can retry a `503` and give up on anything else.
 
+### Answering ACME challenges
+
+`PUT /acme` adds a DNS-01 challenge's TXT record as an [acme profile](#acme)'s caller, and `DELETE /acme` removes it. Like `POST /email`, it isn't OAuth, and isn't in the contract below.
+
+- `Authorization: Bearer <token>`: an OIDC token from a provider, verified as an exchange's subject token is, which must be allowed the profile.
+- The body: JSON, `{"profile": "…", "name": "_acme-challenge.<domain>", "value": "<digest>"}`, with the record's full name.
+
+```sh
+curl -sS -X PUT https://cloudflare-sts-api.example.com/acme -H "Authorization: Bearer $SVID" \
+  --json '{"profile": "homelab:acme.app", "name": "_acme-challenge.app.example.com", "value": "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"}'
+```
+
+Both are idempotent: `PUT` adds nothing when the broker's record is there already, and `DELETE` removes nothing when it's gone. Either answers `204`. Otherwise `{ "error": "<code>", "error_description": "<why>" }`:
+
+- `400 invalid_request`: a body that isn't the JSON above, or a value that isn't a digest
+- `401 invalid_token`: no token, or one that isn't valid
+- `403 insufficient_scope`: a token its provider doesn't admit, not allowed the profile, a profile without an `acme`, or a name it doesn't list
+- `503 temporarily_unavailable`: the issuer's keys or Cloudflare failed
+
+A client can retry a `503` and give up on anything else.
+
 **Contract:** [`stsv1.tsp`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.tsp), in TypeSpec, compiled to the OpenAPI document [`stsv1.yaml`](../cloudflare-sts-sdk/openapi/sts/v1/stsv1.yaml). The Worker's types, server and router are generated from it, and requests that don't fit it are refused (`400`) before any handler runs. [cf-contrib/cloudflare-sts](https://github.com/cf-contrib/cloudflare-sts)'s action calls it.
 
 ## Security
@@ -640,6 +679,12 @@ A message sent through `POST /email` is `email.send`, with its envelope and Clou
 {"level":"INFO","event":"email.send","provider":"spire","profile":"homelab:email.gatus","sub":"spiffe://example.org/svc/gatus","claims":"{}","from":"noreply@example.com","to":"[\"alerts@example.com\"]","message_ids":"[\"<…@example.com>\"]"}
 ```
 
+A challenge record added through `PUT /acme` is `acme.present`, and one removed through `DELETE /acme` is `acme.cleanup`, with the zone and the name, never the value; a refused one is `acme.deny`:
+
+```json
+{"level":"INFO","event":"acme.present","provider":"spire","profile":"homelab:acme.app","sub":"spiffe://example.org/svc/app","claims":"{}","zone":"fedcba9876543210fedcba9876543210","name":"_acme-challenge.app.example.com"}
+```
+
 Denials are `token.deny`, a warning, with the response's `error`, and its `error_description` as `message`. For the broker's own faults, the message is the full one the caller doesn't get:
 
 ```json
@@ -658,6 +703,9 @@ The other events:
 | `token.cleanup` | `token_id`, `name`, `expires_at` | The cron deleted an expired token |
 | `cleanup.done` | `deleted` | The cron's run, and how many it deleted |
 | `cleanup.failed` | `error`, `message` | The cron's run failed |
+| `acme.sweep` | `zone`, `record_id` | The cron removed a challenge record a client left behind |
+| `acme.sweep.done` | `swept` | The cron's sweep of challenge records, and how many it removed |
+| `acme.sweep.failed` | `message` | The cron's sweep of challenge records failed |
 | `misconfigured` | `message` | The bindings or the policy are invalid: the first problem |
 | `unready` | `message` | `/health/ready` answered `503`: a secret can't be read, and why |
 

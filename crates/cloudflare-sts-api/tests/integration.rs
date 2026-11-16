@@ -1302,6 +1302,207 @@ mod email {
     }
 }
 
+mod acme {
+    use super::*;
+
+    const APP: &str = "spiffe://example.org/svc/app";
+    const NAME: &str = "_acme-challenge.app.example.org";
+    const DIGEST: &str = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0";
+    const COMMENT: &str = "cloudflare-sts:acme";
+
+    fn svid(sub: &str) -> String {
+        sign_svid(&SPIFFE_JWT_KEY, SPIFFE_JWT_KID, json!({ "sub": sub }))
+    }
+
+    fn challenge(name: &str) -> Value {
+        json!({ "profile": "acme.app", "name": name, "value": DIGEST })
+    }
+
+    /// The zone's records at `name`.
+    fn records_at(name: &str) -> Vec<StoredRecord> {
+        world()
+            .cloudflare
+            .records
+            .values()
+            .filter(|r| r.name == name)
+            .cloned()
+            .collect()
+    }
+
+    fn at(offset: i64) -> String {
+        chrono::DateTime::from_timestamp(now() as i64 + offset, 0)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
+
+    #[tokio::test]
+    async fn adds_the_record_once_then_removes_it() {
+        let t = start().await;
+        let token = svid(APP);
+        for _ in 0..2 {
+            let res = acme(Method::PUT, Some(&token), challenge(NAME)).await;
+            assert_eq!(res.status, 204, "{}", res.text);
+        }
+        let added = records_at(NAME);
+        assert_eq!(added.len(), 1, "{added:?}");
+        assert_eq!(added[0].kind, "TXT");
+        assert_eq!(added[0].content, format!("\"{DIGEST}\""));
+        assert_eq!(added[0].comment.as_deref(), Some(COMMENT));
+        assert_matches(
+            &t.audit("acme.present").await.unwrap(),
+            json!({ "provider": "spire", "profile": "acme.app", "sub": APP, "name": NAME }),
+        );
+
+        for _ in 0..2 {
+            let res = acme(Method::DELETE, Some(&token), challenge(NAME)).await;
+            assert_eq!(res.status, 204, "{}", res.text);
+        }
+        assert!(records_at(NAME).is_empty());
+        assert!(t.audit("acme.cleanup").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn answers_a_wildcards_challenge_at_its_base_name() {
+        let _t = start().await;
+        let name = "_acme-challenge.apps.example.org";
+        let res = acme(Method::PUT, Some(&svid(APP)), challenge(name)).await;
+        assert_eq!(res.status, 204, "{}", res.text);
+        assert_eq!(records_at(name).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn removes_only_its_own_record() {
+        let _t = start().await;
+        let theirs = world().cloudflare.add_record(
+            ZONE_ID,
+            "TXT",
+            NAME,
+            &format!("\"{DIGEST}\""),
+            None,
+            at(0),
+        );
+        let res = acme(Method::DELETE, Some(&svid(APP)), challenge(NAME)).await;
+        assert_eq!(res.status, 204, "{}", res.text);
+        assert!(world().cloudflare.records.contains_key(&theirs.id));
+    }
+
+    /// Refused with `status` and `error`, and nothing written.
+    async fn assert_not_answered(t: &Test, res: Reply, status: u16, error: &str, message: &str) {
+        assert_eq!(res.status, status, "{}", res.text);
+        assert_eq!(res.json()["error"], error, "{}", res.text);
+        let deny = t.audit("acme.deny").await.unwrap();
+        assert_refused(&deny, error, message);
+        assert!(world().cloudflare.records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn refuses_without_a_valid_token() {
+        let t = start().await;
+        let res = acme(Method::PUT, None, challenge(NAME)).await;
+        assert_not_answered(&t, res, 401, "invalid_token", "a bearer token is required").await;
+    }
+
+    #[tokio::test]
+    async fn refuses_another_services_token() {
+        let t = start().await;
+        let other = svid("spiffe://example.org/svc/other");
+        let res = acme(Method::PUT, Some(&other), challenge(NAME)).await;
+        assert_not_answered(&t, res, 403, "insufficient_scope", "acme.app").await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_profile_that_isnt_for_acme() {
+        let t = start().await;
+        let body = json!({ "profile": "tunnel.app", "name": NAME, "value": DIGEST });
+        let res = acme(Method::PUT, Some(&svid(APP)), body).await;
+        assert_not_answered(
+            &t,
+            res,
+            403,
+            "insufficient_scope",
+            "profile tunnel.app isn't for ACME challenges",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_name_the_profile_doesnt_list() {
+        let t = start().await;
+        let name = "_acme-challenge.other.example.org";
+        let res = acme(Method::PUT, Some(&svid(APP)), challenge(name)).await;
+        assert_not_answered(
+            &t,
+            res,
+            403,
+            "insufficient_scope",
+            "doesn't answer challenges at _acme-challenge.other.example.org",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_value_that_isnt_a_digest() {
+        let t = start().await;
+        let body = json!({ "profile": "acme.app", "name": NAME, "value": "v=spf1 -all" });
+        let res = acme(Method::PUT, Some(&svid(APP)), body).await;
+        assert_not_answered(
+            &t,
+            res,
+            400,
+            "invalid_request",
+            "isn't a challenge's digest",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn says_when_cloudflare_fails() {
+        let t = start().await;
+        world().cloudflare.fail_dns = true;
+        let res = acme(Method::PUT, Some(&svid(APP)), challenge(NAME)).await;
+        assert_not_answered(
+            &t,
+            res,
+            503,
+            "temporarily_unavailable",
+            "Cloudflare: dnsRecords.list",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn is_never_exchanged_for() {
+        let t = start().await;
+        let res = job_token(&svid(APP), &[("scope", "acme.app")]).await;
+        assert_eq!(res.status, 400, "{}", res.text);
+        assert_refused(
+            &t.deny().await,
+            "invalid_scope",
+            "scope acme.app is for ACME challenges",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_scheduled_cleanup_removes_only_its_stale_records() {
+        let _t = start().await;
+        let (stale, fresh, theirs) = {
+            let mut world = world();
+            let cf = &mut world.cloudflare;
+            (
+                cf.add_record(ZONE_ID, "TXT", NAME, "\"a\"", Some(COMMENT), at(-2 * 3600)),
+                cf.add_record(ZONE_ID, "TXT", NAME, "\"b\"", Some(COMMENT), at(-60)),
+                cf.add_record(ZONE_ID, "TXT", NAME, "\"c\"", None, at(-2 * 3600)),
+            )
+        };
+        let res = call(Method::GET, "/__scheduled?cron=17+*+*+*+*").await;
+        assert_eq!(res.status, 200, "{}", res.text);
+        let world = world();
+        assert!(!world.cloudflare.records.contains_key(&stale.id));
+        assert!(world.cloudflare.records.contains_key(&fresh.id));
+        assert!(world.cloudflare.records.contains_key(&theirs.id));
+    }
+}
+
 #[tokio::test]
 async fn serves_only_the_apis_routes() {
     let _t = start().await;
