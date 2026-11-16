@@ -384,7 +384,9 @@ impl PolicyConfig {
         let mut zones: Vec<&str> = self
             .profiles
             .iter()
-            .filter_map(|p| p.acme.as_ref().map(|acme| acme.zone.as_str()))
+            .filter_map(|p| p.acme.as_ref())
+            .flatten()
+            .map(|acme| acme.zone.as_str())
             .collect();
         zones.sort_unstable();
         zones.dedup();
@@ -668,9 +670,9 @@ pub struct ProfileConfig {
     /// profile with one has nothing else, and is never exchanged for.
     pub email: Option<EmailConfig>,
     /// The ACME DNS-01 challenges its caller may answer, through `PUT` and
-    /// `DELETE /acme`. A profile with one has nothing else, and is never
-    /// exchanged for.
-    pub acme: Option<AcmeConfig>,
+    /// `DELETE /acme`, a zone's names each. A profile with them has nothing
+    /// else, and is never exchanged for.
+    pub acme: Option<Vec<AcmeConfig>>,
 }
 
 impl ProfileConfig {
@@ -865,7 +867,13 @@ impl ProfileConfig {
                     return email.check(&format!("{at}.email"));
                 }
                 if let Some(acme) = &self.acme {
-                    return acme.check(&format!("{at}.acme"));
+                    if acme.is_empty() {
+                        return Err(format!("{at}.acme must list at least one zone"));
+                    }
+                    for (i, zone) in acme.iter().enumerate() {
+                        zone.check(&format!("{at}.acme[{i}]"))?;
+                    }
+                    return Ok(());
                 }
             }
             [] if !grants => {
@@ -1216,9 +1224,10 @@ impl EmailConfig {
 /// §8.4).
 pub const CHALLENGE_LABEL: &str = "_acme-challenge.";
 
-/// The ACME DNS-01 challenges a profile's caller may answer, through `PUT`
-/// and `DELETE /acme`: TXT records at `_acme-challenge.<name>`, in one zone,
-/// which the broker writes and removes with the Cloudflare token.
+/// The ACME DNS-01 challenges a profile's caller may answer in one zone,
+/// through `PUT` and `DELETE /acme`: TXT records at `_acme-challenge.<name>`,
+/// which the broker writes and removes with the Cloudflare token. A profile
+/// lists one per zone its names are in.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AcmeConfig {
@@ -2362,26 +2371,43 @@ pub(super) mod tests {
     }
 
     const ZONE_ID: &str = "fedcba9876543210fedcba9876543210";
+    const OTHER_ZONE_ID: &str = "0123456789abcdef0123456789abcdef";
 
     fn acme_profile() -> Value {
-        json!({ "name": "acme.app", "acme": { "zone": ZONE_ID, "names": ["app.example.com", "*.apps.example.com"] } })
+        json!({ "name": "acme.app", "acme": [
+            { "zone": ZONE_ID, "names": ["app.example.com", "*.apps.example.com"] },
+            { "zone": OTHER_ZONE_ID, "names": ["example.org"] },
+        ] })
+    }
+
+    /// The zone of the profile's that answers at `record`, if one does.
+    fn zone_answering(policy: &PolicyConfig, record: &str) -> Option<String> {
+        let acme = policy
+            .profiles
+            .iter()
+            .find_map(|p| p.acme.as_ref())
+            .expect("the profile has its acme");
+        acme.iter()
+            .find(|a| a.answers_at(record))
+            .map(|a| a.zone.clone())
     }
 
     #[test]
     fn an_acme_profile_answers_only_at_its_names_challenge_records() {
         let parsed = parse(&with_profile(acme_profile()));
-        let acme = parsed
-            .profiles
-            .iter()
-            .find_map(|p| p.acme.as_ref())
-            .expect("the profile has its acme");
-        for record in [
-            "_acme-challenge.app.example.com",
-            "_ACME-Challenge.App.Example.com.",
+        for (record, zone) in [
+            ("_acme-challenge.app.example.com", ZONE_ID),
+            ("_ACME-Challenge.App.Example.com.", ZONE_ID),
             // A wildcard's challenge is at its base name.
-            "_acme-challenge.apps.example.com",
+            ("_acme-challenge.apps.example.com", ZONE_ID),
+            // Each name in its own zone.
+            ("_acme-challenge.example.org", OTHER_ZONE_ID),
         ] {
-            assert!(acme.answers_at(record), "{record}");
+            assert_eq!(
+                zone_answering(&parsed, record).as_deref(),
+                Some(zone),
+                "{record}"
+            );
         }
         for record in [
             "app.example.com",
@@ -2391,8 +2417,9 @@ pub(super) mod tests {
             "_acme-challenge.*.apps.example.com",
             "_acme-challenge.app.example.com.evil.com",
             "x._acme-challenge.app.example.com",
+            "_acme-challenge.www.example.org",
         ] {
-            assert!(!acme.answers_at(record), "{record}");
+            assert_eq!(zone_answering(&parsed, record), None, "{record}");
         }
     }
 
@@ -2403,7 +2430,7 @@ pub(super) mod tests {
             scoped(&policy, claims(), &["deploy", "acme.app"]),
             err("scope acme.app is for ACME challenges, which PUT /acme does")
         );
-        assert_eq!(parse(&policy).acme_zones(), [ZONE_ID]);
+        assert_eq!(parse(&policy).acme_zones(), [OTHER_ZONE_ID, ZONE_ID]);
     }
 
     #[test]
@@ -2412,6 +2439,7 @@ pub(super) mod tests {
         with_token["token"] = token();
         let mut with_email = email_profile();
         with_email["acme"] = acme_profile()["acme"].clone();
+        let acme = |zone: Value| json!({ "name": "acme.app", "acme": [zone] });
         for (profile, why) in [
             (
                 with_token,
@@ -2422,16 +2450,20 @@ pub(super) mod tests {
                 "profiles[2] can't have both an email and an acme",
             ),
             (
-                json!({ "name": "acme.app", "acme": { "zone": ZONE_ID, "names": [] } }),
-                "profiles[2].acme.names must name at least one domain",
+                json!({ "name": "acme.app", "acme": [] }),
+                "profiles[2].acme must list at least one zone",
             ),
             (
-                json!({ "name": "acme.app", "acme": { "zone": "example.com", "names": ["app.example.com"] } }),
-                "profiles[2].acme.zone must be a zone's ID",
+                acme(json!({ "zone": ZONE_ID, "names": [] })),
+                "profiles[2].acme[0].names must name at least one domain",
             ),
             (
-                json!({ "name": "acme.app", "acme": { "zone": ZONE_ID, "names": ["App.example.com"] } }),
-                "profiles[2].acme.names: App.example.com isn't a lowercase domain",
+                acme(json!({ "zone": "example.com", "names": ["app.example.com"] })),
+                "profiles[2].acme[0].zone must be a zone's ID",
+            ),
+            (
+                acme(json!({ "zone": ZONE_ID, "names": ["App.example.com"] })),
+                "profiles[2].acme[0].names: App.example.com isn't a lowercase domain",
             ),
         ] {
             let err = parse_err(&with_profile(profile));

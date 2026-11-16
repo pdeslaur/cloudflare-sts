@@ -128,18 +128,19 @@ async fn answer_as_caller(config: &Config, req: Request) -> Result<(), Refused> 
         jwt,
         profile,
     } = authorize(config, &headers, &challenge.profile).await?;
-    let Some(acme) = &profile.acme else {
+    let Some(zones) = &profile.acme else {
         return Err(Refused::insufficient_scope(format!(
             "profile {} isn't for ACME challenges",
             profile.name
         )));
     };
-    if !acme.answers_at(&challenge.name) {
+    // The zone whose names include the one asked for.
+    let Some(acme) = zones.iter().find(|acme| acme.answers_at(&challenge.name)) else {
         return Err(Refused::insufficient_scope(format!(
             "the profile doesn't answer challenges at {}",
             challenge.name
         )));
-    }
+    };
     let name = challenge
         .name
         .strip_suffix('.')
