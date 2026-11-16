@@ -191,7 +191,7 @@ email = { from = ["noreply@example.org"], to = ["alerts@example.org", "oncall@ex
 name = "acme.app"
 provider = "spire"
 forward_claims = ["sub"]
-acme = { zone = "fedcba9876543210fedcba9876543210", names = ["app.example.org", "*.apps.example.org"] }
+acme = [{ zone = "fedcba9876543210fedcba9876543210", names = ["app.example.org", "*.apps.example.org"] }]
 
 [[profiles]]
 name = "pinned-state"

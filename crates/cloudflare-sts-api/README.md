@@ -426,11 +426,15 @@ A profile's `acme` lets its caller answer ACME DNS-01 challenges for the names i
 [[profiles]]
 name     = "homelab:acme.app"
 provider = "spire"
-acme     = { zone = "fedcba9876543210fedcba9876543210", names = ["app.example.com", "*.apps.example.com"] }   # example.com
+acme     = [
+  { zone = "fedcba9876543210fedcba9876543210", names = ["app.example.com", "*.apps.example.com"] },   # example.com
+  { zone = "0123456789abcdef0123456789abcdef", names = ["app.example.org"] },                         # example.org
+]
 ```
 
-- **`zone`:** the ID of the zone every name is in.
-- **`names`:** the names it may prove control of, lowercase, as a certificate names them. Its caller may write only at `_acme-challenge.<name>`; a wildcard's challenge is at its base name, so `*.apps.example.com` answers at `_acme-challenge.apps.example.com`.
+- **One entry per zone:** a certificate's names may span zones, so `acme` lists each zone with its names, and the broker writes a challenge in the zone whose names include it.
+- **`zone`:** the zone's ID.
+- **`names`:** the names in it the caller may prove control of, lowercase, as a certificate names them. Its caller may write only at `_acme-challenge.<name>`; a wildcard's challenge is at its base name, so `*.apps.example.com` answers at `_acme-challenge.apps.example.com`.
 - **Only a challenge's digest.** The record is TXT, and its value must be 43 characters of base64url (RFC 8555 §8.4), so the profile can't put anything else in the zone.
 - **Only its own records.** The broker marks what it adds with the comment `cloudflare-sts:acme`, and removes only those, by name and value, so two challenges at one name (a name and its wildcard) don't remove each other. The hourly cron removes the ones older than an hour that a client left behind.
 - **Never exchanged for.** A profile with an `acme` has nothing else, and `POST /oauth/token` refuses it (`invalid_scope`): it's only for `/acme`.
