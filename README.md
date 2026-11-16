@@ -33,7 +33,7 @@ steps:
 | [`action`](https://github.com/cf-contrib/cloudflare-sts/tree/main/action), upstream's | `uses: cf-contrib/cloudflare-sts@<version>` | The GitHub Action, which this fork doesn't carry: upstream's works with its broker. In JavaScript with no runtime dependencies. Gets the job's OIDC token, exports the minted Cloudflare token, and revokes it at job end. |
 | [`crates/cloudflare-sts-api`](crates/cloudflare-sts-api) | `index.js` + `index_bg.wasm.base64` in [Releases](https://github.com/cf-contrib/cloudflare-sts/releases) | The broker, a Cloudflare Worker written in Rust, in your account. Checks the OIDC token against your policy, and mints the Cloudflare token, R2 credentials or an Access service token. |
 | [`crates/cloudflare-sts-sdk`](crates/cloudflare-sts-sdk) | A Rust crate in this workspace; not published | The broker's HTTP API: its [TypeSpec](crates/cloudflare-sts-sdk/openapi/sts/v1/stsv1.tsp), the OpenAPI document compiled from it, and the types, server traits and client generated from it; hand-written beside them, the health endpoints. The Worker builds on it. |
-| [`deployment/terraform`](deployment/terraform) | `//deployment/terraform?ref=<version>` | Deploys the released Worker with your policy, its bindings and its cron. |
+| [`modules/api`](modules/api) | `//modules/api?ref=<version>` | Deploys the released Worker with your policy, its bindings and its cron. |
 
 The broker and its Terraform module are released together from one tag. The action talks only to the broker, never to the Cloudflare API.
 
@@ -83,7 +83,7 @@ If a stored secret is acceptable to you, it's less to run.
 
 1. **Create the Cloudflare token.** In the Cloudflare dashboard, create an account-owned API token with **Account API Tokens Write** (plus R2 permissions for [buckets](crates/cloudflare-sts-api#buckets)), and store it in Secrets Store.
 2. **Write a policy** that says which repos, branches and environments get which permissions. See the [broker's README](crates/cloudflare-sts-api#policy).
-3. **Deploy the broker** with the [Terraform module](deployment/terraform), on workers.dev (a custom domain is optional), then check that `<url>/health/ready` returns `200`: the policy was accepted and the secrets can be read.
+3. **Deploy the broker** with the [Terraform module](modules/api), on workers.dev (a custom domain is optional), then check that `<url>/health/ready` returns `200`: the policy was accepted and the secrets can be read.
 4. **Add the action** to a job with `permissions: id-token: write`. See [upstream's action README](https://github.com/cf-contrib/cloudflare-sts/tree/main/action).
 
 ## Development
@@ -94,7 +94,7 @@ Everything runs inside the dev shell: `nix develop`.
 (cd crates/cloudflare-sts-sdk/openapi && npm ci && npm run generate)   # the OpenAPI document, after editing the .tsp
 cargo fmt --all --check && cargo test                                    # the crates' unit tests
 crates/cloudflare-sts-api/tests/run.sh                                 # the broker end to end, under wrangler dev
-(cd deployment/terraform && tofu test)                                   # the Terraform module
+(cd modules/api && tofu test)                                   # the Terraform module
 ```
 
 Releases are cut by release-please from Conventional Commits. Each release is tagged `vX.Y.Z` and attaches the broker's `index.js`, `index_bg.wasm.base64` and their `SHA256SUMS`. Pin the action to a release tag or its commit SHA: before 1.0 there is no floating major tag, because minor releases may break.

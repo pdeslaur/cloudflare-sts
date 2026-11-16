@@ -52,7 +52,7 @@ A job in `example-org/app` (repo `200000003`), on `main`, in the `prod` environm
    gh api orgs/<org> --jq .id           # the GitHub Actions provider's repository_owner_id
    gh api repos/<org>/<repo> --jq .id   # a profile's repository_id
    ```
-3. **Deploy** the released Worker with the [Terraform module](../../deployment/terraform) (`//deployment/terraform?ref=<version>`). It downloads the release (optionally pinned to a checksum), stores your policy in a Workers KV namespace bound to it, and sets up the other bindings, the workers.dev URL (or an optional custom domain) and the cron. To deploy a build of your own, build it and point the module's `worker_dir` at it:
+3. **Deploy** the released Worker with the [Terraform module](../../modules/api) (`//modules/api?ref=<version>`). It downloads the release (optionally pinned to a checksum), stores your policy in a Workers KV namespace bound to it, and sets up the other bindings, the workers.dev URL (or an optional custom domain) and the cron. To deploy a build of your own, build it and point the module's `worker_dir` at it:
    ```sh
    worker-build --release   # then worker_dir = ".../crates/cloudflare-sts-api/build"
    ```
@@ -269,7 +269,7 @@ Cedar wants an action's type to end in `Action`, hence the namespaces. The reque
 
 ### People
 
-The broker takes OIDC tokens only. For people, use an identity provider that issues them an ID token, such as a [Cloudflare Access for SaaS](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/saas-apps/generic-oidc-saas/) OIDC application, as a public client with PKCE and the redirect `http://127.0.0.1:8250/callback`. A provider for it is like any other, and its profiles match on its tokens' claims, such as `email`. terraform-cloudflare-access's [`saas-oidc`](https://github.com/tf-contrib/terraform-cloudflare-access/tree/main/modules/saas-oidc) module creates the application and its policy, and the [Terraform module's README](../../deployment/terraform#people) shows the provider to give the broker.
+The broker takes OIDC tokens only. For people, use an identity provider that issues them an ID token, such as a [Cloudflare Access for SaaS](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/saas-apps/generic-oidc-saas/) OIDC application, as a public client with PKCE and the redirect `http://127.0.0.1:8250/callback`. A provider for it is like any other, and its profiles match on its tokens' claims, such as `email`. terraform-cloudflare-access's [`saas-oidc`](https://github.com/tf-contrib/terraform-cloudflare-access/tree/main/modules/saas-oidc) module creates the application and its policy, and the [Terraform module's README](../../modules/api#people) shows the provider to give the broker.
 
 An ID token's `aud` is the client it was issued to, so that client's ID is the provider's `audience`. The broker doesn't know how people sign in, and doesn't list providers: [cf-vault](https://github.com/cf-contrib/cf-vault) is told the issuer and client in the person's own profile (`oauth2.issuer`, `oauth2.client_id`), and the broker's endpoints (`oauth2.exchange.token_endpoint`, `revocation_endpoint`).
 

@@ -60,7 +60,7 @@ jobs:
       - name: Integration Test Rust Worker
         run: nix develop --command crates/cloudflare-sts-api/tests/run.sh
       - name: Validate Terraform Module
-        working-directory: deployment/terraform
+        working-directory: modules/api
         run: |
           nix develop --command tofu fmt -check -recursive
           nix develop --command tofu init -backend=false
@@ -122,7 +122,7 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.nix', 'flake.lock', 'rust-toolchain.toml') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-      # The Worker as deployment/terraform uploads it: worker-build's index.js, and
+      # The Worker as modules/api uploads it: worker-build's index.js, and
       # the wasm as base64 text, so Terraform can check its checksum.
       - name: Build
         working-directory: crates/cloudflare-sts-api

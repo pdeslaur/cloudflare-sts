@@ -11,8 +11,8 @@
       "bump-minor-pre-major": true,
       "extra-files": [
         "README.md",
-        "deployment/terraform/README.md",
-        "deployment/terraform/variables.tf"
+        "modules/api/README.md",
+        "modules/api/variables.tf"
       ]
     }
   }

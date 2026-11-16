@@ -3,7 +3,7 @@
 # stand-ins, and its policy's providers are the stand-ins' issuers, which the
 # tests serve on 127.0.0.1:8791 while they run. tests/run.sh creates the
 # secrets in a local store and runs the tests against it. Releases are built
-# without `stand-ins`, and deployed with deployment/terraform.
+# without `stand-ins`, and deployed with modules/api.
 name = "cloudflare-sts-api"
 main = "build/index.js"
 compatibility_date = "2026-08-15"
