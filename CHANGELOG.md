@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.25.0](https://github.com/pdeslaur/cloudflare-sts/compare/v0.24.1...v0.25.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* the module's source path is //modules/api, not //deployment/terraform.
+
+### Features
+
+* answer ACME DNS-01 challenges for an acme profile's caller ([#14](https://github.com/pdeslaur/cloudflare-sts/issues/14)) ([2672aad](https://github.com/pdeslaur/cloudflare-sts/commit/2672aad85f22fd0ca159e34358efca8e1814d259))
+
+
+### Code Refactoring
+
+* move the Terraform module to modules/api ([#15](https://github.com/pdeslaur/cloudflare-sts/issues/15)) ([92694a1](https://github.com/pdeslaur/cloudflare-sts/commit/92694a1108d7f7ce7a42d3c3cfdf3a37a12113e2))
+
 ## [0.24.1](https://github.com/pdeslaur/cloudflare-sts/compare/v0.24.0...v0.24.1) (2026-11-14)
 
 
