@@ -7,7 +7,7 @@
 > limited to the caller's key prefix, or both. It knows no issuer by name: who
 > may do what is in the Cedar policy.
 
-[![CI](https://github.com/cf-contrib/cloudflare-sts/actions/workflows/ci.yml/badge.svg)](https://github.com/cf-contrib/cloudflare-sts/actions/workflows/ci.yml)
+[![CI](https://github.com/pdeslaur/cloudflare-sts/actions/workflows/ci.yml/badge.svg)](https://github.com/pdeslaur/cloudflare-sts/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](../../LICENSE)
 
 > [!NOTE]
