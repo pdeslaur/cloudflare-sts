@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.1](https://github.com/pdeslaur/cloudflare-sts/compare/v0.26.0...v0.26.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **api:** keep a worker_dir build out of the state ([#21](https://github.com/pdeslaur/cloudflare-sts/issues/21)) ([8d1c5be](https://github.com/pdeslaur/cloudflare-sts/commit/8d1c5be4cfbc54b5a2f27df2ddf687eac0e54bc7))
+
 ## [0.26.0](https://github.com/pdeslaur/cloudflare-sts/compare/v0.25.0...v0.26.0) (2026-11-16)
 
 
