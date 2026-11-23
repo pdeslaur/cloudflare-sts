@@ -403,8 +403,13 @@ run "local_worker_dir" {
   }
 
   assert {
-    condition     = anytrue([for m in cloudflare_worker_version.this.modules : m.name == "index_bg.wasm" && m.content_base64 == filebase64("tests/fixtures/worker/index_bg.wasm")])
-    error_message = "the local wasm should be uploaded"
+    condition     = anytrue([for m in cloudflare_worker_version.this.modules : m.name == "index_bg.wasm" && m.content_file == "tests/fixtures/worker/index_bg.wasm"])
+    error_message = "the local wasm should be uploaded from its file"
+  }
+
+  assert {
+    condition     = alltrue([for m in cloudflare_worker_version.this.modules : m.content_base64 == null])
+    error_message = "a local build should be uploaded by file, keeping its content out of the state"
   }
 
   assert {

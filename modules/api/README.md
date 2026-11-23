@@ -343,6 +343,14 @@ cd crates/cloudflare-sts-api
 worker-build --release   # worker_dir = ".../crates/cloudflare-sts-api/build"
 ```
 
+A `worker_dir` build is uploaded from its files, so the state keeps their paths
+and hashes, not their content. A downloaded release is uploaded inline, and
+the state keeps both the download and the upload: about 30 MB. To keep a
+release out of the state, download its assets before `tofu` runs, check them
+against its `SHA256SUMS`, decode `index_bg.wasm.base64` into `index_bg.wasm`,
+and set `worker_dir` to that directory. A relative `worker_dir` resolves
+against the directory `tofu` runs in.
+
 ## Inputs
 
 | Variable | Required | Default | Description |
@@ -355,7 +363,7 @@ worker-build --release   # worker_dir = ".../crates/cloudflare-sts-api/build"
 | `profiles` | yes | | What callers may get, in the configuration's format: `name`, `provider`, `forward_claims`, `token`, `bucket`, `access`, `audience`. See [Policy](#policy). |
 | `cedar_policy` | yes | | Who gets what: Cedar text with a permit for `Admit::Action::"<provider>"` for every provider, pinning your org, and `Profile::Action::"<name>"` for every profile, each with an `@id`. See [Policy](#policy). |
 | `defaults` | no | `{}` | `{ ttl?, max_ttl? }`: the TTLs of profiles that don't set their own. |
-| `worker_dir` | no | `null` | A local build (`index.js`, `index_bg.wasm`) to deploy instead of a release. |
+| `worker_dir` | no | `null` | A local build (`index.js`, `index_bg.wasm`) to deploy instead of a release, uploaded from its files and kept out of the state. |
 | `release_tag` | no | the module's release | Release to deploy, or `latest`. |
 | `checksums_sha256` | no | `null` | Expected SHA-256 of the release's `SHA256SUMS`. |
 | `worker_name` | no | `cloudflare-sts-api` | Worker script name. |

@@ -86,16 +86,21 @@ resource "cloudflare_worker_version" "this" {
     }
   }
 
+  # A worker_dir build is uploaded from its files, which the state records by
+  # path and the hash the provider computes; a downloaded release is uploaded inline, and both its
+  # download and the upload stay in the state.
   modules = [
     {
       name           = "index.js"
       content_type   = "application/javascript+module"
-      content_base64 = sensitive(base64encode(local.index_js))
+      content_base64 = var.worker_dir == null ? sensitive(base64encode(local.index_js)) : null
+      content_file   = var.worker_dir == null ? null : "${var.worker_dir}/index.js"
     },
     {
       name           = "index_bg.wasm"
       content_type   = "application/wasm"
-      content_base64 = sensitive(local.wasm_base64)
+      content_base64 = var.worker_dir == null ? sensitive(local.wasm_base64) : null
+      content_file   = var.worker_dir == null ? null : "${var.worker_dir}/index_bg.wasm"
     },
   ]
 
