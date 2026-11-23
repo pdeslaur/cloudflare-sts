@@ -5,7 +5,7 @@
 > least-privilege Cloudflare API token, so no workflow stores a
 > `CLOUDFLARE_API_TOKEN` secret.
 
-[![CI](https://github.com/cf-contrib/cloudflare-sts/actions/workflows/ci.yml/badge.svg)](https://github.com/cf-contrib/cloudflare-sts/actions/workflows/ci.yml)
+[![CI](https://github.com/pdeslaur/cloudflare-sts/actions/workflows/ci.yml/badge.svg)](https://github.com/pdeslaur/cloudflare-sts/actions/workflows/ci.yml)
 [![Rust (edition 2024)](https://img.shields.io/badge/Rust-2024-black?logo=rust)](https://www.rust-lang.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Nix Flake](https://img.shields.io/badge/Nix-Flake-5277C3?logo=nixos&logoColor=white)](https://wiki.nixos.org/wiki/Flakes)
@@ -31,7 +31,7 @@ steps:
 | | Ships as | What it is |
 |---|---|---|
 | [`action`](https://github.com/cf-contrib/cloudflare-sts/tree/main/action), upstream's | `uses: cf-contrib/cloudflare-sts@<version>` | The GitHub Action, which this fork doesn't carry: upstream's works with its broker. In JavaScript with no runtime dependencies. Gets the job's OIDC token, exports the minted Cloudflare token, and revokes it at job end. |
-| [`crates/cloudflare-sts-api`](crates/cloudflare-sts-api) | `index.js` + `index_bg.wasm.base64` in [Releases](https://github.com/cf-contrib/cloudflare-sts/releases) | The broker, a Cloudflare Worker written in Rust, in your account. Checks the OIDC token against your policy, and mints the Cloudflare token, R2 credentials or an Access service token. |
+| [`crates/cloudflare-sts-api`](crates/cloudflare-sts-api) | `index.js` + `index_bg.wasm.base64` in [Releases](https://github.com/pdeslaur/cloudflare-sts/releases) | The broker, a Cloudflare Worker written in Rust, in your account. Checks the OIDC token against your policy, and mints the Cloudflare token, R2 credentials or an Access service token. |
 | [`crates/cloudflare-sts-sdk`](crates/cloudflare-sts-sdk) | A Rust crate in this workspace; not published | The broker's HTTP API: its [TypeSpec](crates/cloudflare-sts-sdk/openapi/sts/v1/stsv1.tsp), the OpenAPI document compiled from it, and the types, server traits and client generated from it; hand-written beside them, the health endpoints. The Worker builds on it. |
 | [`modules/api`](modules/api) | `//modules/api?ref=<version>` | Deploys the released Worker with your policy, its bindings and its cron. |
 
