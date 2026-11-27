@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.0](https://github.com/pdeslaur/cloudflare-sts/compare/v0.26.1...v0.27.0) (2026-11-27)
+
+
+### Features
+
+* **go:** Go client and Caddy DNS provider for the broker ([#24](https://github.com/pdeslaur/cloudflare-sts/issues/24)) ([367a8f5](https://github.com/pdeslaur/cloudflare-sts/commit/367a8f5a35cd2060bca4e9a1677e3c8ffd7b2c02))
+
 ## [0.26.1](https://github.com/pdeslaur/cloudflare-sts/compare/v0.26.0...v0.26.1) (2026-11-23)
 
 
