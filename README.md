@@ -34,8 +34,9 @@ steps:
 | [`crates/cloudflare-sts-api`](crates/cloudflare-sts-api) | `index.js` + `index_bg.wasm.base64` in [Releases](https://github.com/pdeslaur/cloudflare-sts/releases) | The broker, a Cloudflare Worker written in Rust, in your account. Checks the OIDC token against your policy, and mints the Cloudflare token, R2 credentials or an Access service token. |
 | [`crates/cloudflare-sts-sdk`](crates/cloudflare-sts-sdk) | A Rust crate in this workspace; not published | The broker's HTTP API: its [TypeSpec](crates/cloudflare-sts-sdk/openapi/sts/v1/stsv1.tsp), the OpenAPI document compiled from it, and the types, server traits and client generated from it; hand-written beside them, the health endpoints. The Worker builds on it. |
 | [`modules/api`](modules/api) | `//modules/api?ref=<version>` | Deploys the released Worker with your policy, its bindings and its cron. |
+| [`go`](go) | Go module `github.com/pdeslaur/cloudflare-sts` | For workloads that call the broker with their SPIFFE JWT-SVID: a client, and a Caddy DNS provider that answers ACME DNS-01 challenges through the broker. |
 
-The broker and its Terraform module are released together from one tag. The action talks only to the broker, never to the Cloudflare API.
+The broker, its Terraform module and the Go module are released together from one tag. The action talks only to the broker, never to the Cloudflare API.
 
 People on their own machines use [cf-vault](https://github.com/cf-contrib/cf-vault): it signs in through your identity provider, trades the ID token at this broker, runs a command with the credentials and revokes the token when it exits. This repository no longer ships a command-line client.
 
@@ -88,7 +89,7 @@ If a stored secret is acceptable to you, it's less to run.
 
 ## Development
 
-Everything runs inside the dev shell: `nix develop`.
+The Rust, TypeScript and Terraform run inside the dev shell: `nix develop`.
 
 ```sh
 (cd crates/cloudflare-sts-sdk/openapi && npm ci && npm run generate)   # the OpenAPI document, after editing the .tsp
@@ -96,6 +97,8 @@ cargo fmt --all --check && cargo test                                    # the c
 crates/cloudflare-sts-api/tests/run.sh                                 # the broker end to end, under wrangler dev
 (cd modules/api && tofu test)                                   # the Terraform module
 ```
+
+The Go packages need the Go in `go.mod`, outside the dev shell: `go vet ./... && go test -race ./...`.
 
 Releases are cut by release-please from Conventional Commits. Each release is tagged `vX.Y.Z` and attaches the broker's `index.js`, `index_bg.wasm.base64` and their `SHA256SUMS`. Pin the action to a release tag or its commit SHA: before 1.0 there is no floating major tag, because minor releases may break.
 
